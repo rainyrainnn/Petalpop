@@ -42,16 +42,26 @@ void main() {
     final database = await databaseFactory.openDatabase(
       path.join(_testDatabaseDirectory.path, 'petalpop_offline.db'),
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE daily_content_cache ('
             'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
           );
+          await db.execute(
+            'CREATE TABLE pending_challenge_operations ('
+            'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+            'user_id TEXT NOT NULL, '
+            'operation TEXT NOT NULL CHECK '
+            '(operation IN (\'complete\', \'undo\')), '
+            'local_date TEXT NOT NULL, '
+            'challenge_id TEXT NOT NULL)',
+          );
         },
       ),
     );
     await database.delete('daily_content_cache');
+    await database.delete('pending_challenge_operations');
     await database.close();
   });
 
@@ -303,6 +313,137 @@ void main() {
   );
 
   test(
+    'offline completion survives restart and syncs once after reconnecting',
+    () async {
+      final storage = LocalDataService();
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      await session.initialize();
+      backend.completionError = StateError('Supabase is unreachable.');
+
+      final challengeId = _challengeId('day', 0);
+      expect(await session.completeDailyChallenge(challengeId), isTrue);
+      expect(session.completedToday, contains(challengeId));
+      expect(session.pendingChallengeSyncCount, 1);
+      session.dispose();
+
+      final reopenedSession = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(reopenedSession.dispose);
+      await reopenedSession.initialize();
+      expect(reopenedSession.completedToday, contains(challengeId));
+      expect(reopenedSession.lifetimeGrowthPoints, 1);
+      expect(reopenedSession.pendingChallengeSyncCount, 1);
+
+      backend.completionError = null;
+      await reopenedSession.syncPendingChanges();
+
+      expect(reopenedSession.pendingChallengeSyncCount, 0);
+      expect(reopenedSession.completedToday, contains(challengeId));
+      expect(reopenedSession.lifetimeGrowthPoints, 1);
+      expect(backend.completedChallenges, [('2026-10-27', challengeId)]);
+    },
+  );
+
+  test(
+    'offline complete and undo operations sync in order without losing others',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+      backend.completionError = StateError('offline');
+      backend.undoError = StateError('offline');
+
+      final selected = _challengeId('day', 0);
+      final preserved = _challengeId('day', 1);
+      expect(await session.completeDailyChallenge(selected), isTrue);
+      expect(session.pendingChallengeSyncCount, 1);
+      expect(await session.completeDailyChallenge(preserved), isTrue);
+      expect(session.pendingChallengeSyncCount, 2);
+      expect(await session.undoDailyChallenge(selected), isTrue);
+
+      expect(session.completedToday, {preserved});
+      expect(session.growthPoints, 1);
+      expect(session.lifetimeGrowthPoints, 1);
+      expect(session.pendingChallengeSyncCount, 3);
+
+      backend.completionError = null;
+      backend.undoError = null;
+      await session.syncPendingChanges();
+
+      expect(session.pendingChallengeSyncCount, 0);
+      expect(session.completedToday, {preserved});
+      expect(session.growthPoints, 1);
+      expect(session.lifetimeGrowthPoints, 1);
+      expect(backend.completedChallenges, [
+        ('2026-10-27', selected),
+        ('2026-10-27', preserved),
+      ]);
+      expect(backend.undoneChallenges, [('2026-10-27', selected)]);
+    },
+  );
+
+  test(
+    'failed sync keeps local garden growth and completion dates intact',
+    () async {
+      final previousDateChallenge = _challengeId('day', 2);
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      backend.setProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-26': [previousDateChallenge],
+          },
+          flowerUnlockDates: {'flower-01': null, 'flower-02': '2026-10-20'},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-02',
+          growthPoints: 4,
+          lifetimeGrowthPoints: 14,
+        ),
+      );
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+      backend.completionError = StateError('temporary network failure');
+
+      final todayChallenge = _challengeId('day', 0);
+      expect(await session.completeDailyChallenge(todayChallenge), isTrue);
+      backend.gardenCompletionOverride = {
+        '2026-10-26': [previousDateChallenge],
+      };
+      await session.refreshDailyChallenges();
+
+      expect(session.completedToday, {todayChallenge});
+      expect(session.completedChallengeCount, 2);
+      expect(session.growthPoints, 5);
+      expect(session.lifetimeGrowthPoints, 15);
+      expect(session.flowerUnlockDates['flower-02'], '2026-10-20');
+      expect(session.pendingChallengeSyncCount, 1);
+    },
+  );
+
+  test(
     'undoing one of three completions preserves others through reload',
     () async {
       final backend = _FakeSupabaseDataService([
@@ -493,7 +634,7 @@ void main() {
   );
 
   test(
-    'failed undo refreshes state and keeps the selected task unchanged',
+    'failed undo is applied locally and remains pending for retry',
     () async {
       final backend = _FakeSupabaseDataService([
         _dailyContent('2026-10-27', 'day'),
@@ -509,20 +650,13 @@ void main() {
       await session.completeDailyChallenge(selected);
 
       backend.undoError = StateError('The undo RPC is unavailable.');
-      await expectLater(
-        session.undoDailyChallenge(selected),
-        throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            contains('undo RPC is unavailable'),
-          ),
-        ),
-      );
+      expect(await session.undoDailyChallenge(selected), isTrue);
 
-      expect(session.completedToday, contains(selected));
-      expect(session.growthPoints, 1);
-      expect(session.lifetimeGrowthPoints, 1);
+      expect(session.completedToday, isNot(contains(selected)));
+      expect(session.growthPoints, 0);
+      expect(session.lifetimeGrowthPoints, 0);
+      expect(session.pendingChallengeSyncCount, 1);
+      expect(session.syncError.toString(), contains('undo RPC is unavailable'));
     },
   );
 
@@ -1124,7 +1258,7 @@ void main() {
   );
 
   test(
-    'backend duplicate-completion verification surfaces query errors',
+    'backend duplicate-completion query errors keep the local operation pending',
     () async {
       final backend =
           _FakeSupabaseDataService([_dailyContent('2026-10-27', 'day')])
@@ -1142,11 +1276,13 @@ void main() {
       final challengeId = _challengeId('day', 0);
       backend.recordExistingCompletion('2026-10-27', challengeId);
 
-      await expectLater(
-        session.completeDailyChallenge(challengeId),
-        throwsStateError,
+      expect(await session.completeDailyChallenge(challengeId), isTrue);
+      expect(session.completedToday, contains(challengeId));
+      expect(session.pendingChallengeSyncCount, 1);
+      expect(
+        session.syncError.toString(),
+        contains('challenge completion query failed'),
       );
-      expect(session.completedToday, isEmpty);
       expect(backend.completedChallenges, isEmpty);
     },
   );
@@ -1215,7 +1351,7 @@ void main() {
     },
   );
 
-  test('failed completion clears only its own saving state', () async {
+  test('failed completion stays done locally and remains pending', () async {
     final backend = _FakeSupabaseDataService([
       _dailyContent('2026-10-27', 'day'),
     ]);
@@ -1232,15 +1368,15 @@ void main() {
     expect(await session.completeDailyChallenge(firstChallenge), isTrue);
     backend.completionError = StateError('request failed');
 
-    await expectLater(
-      session.completeDailyChallenge(failedChallenge),
-      throwsStateError,
-    );
+    expect(await session.completeDailyChallenge(failedChallenge), isTrue);
 
     expect(session.completedToday, contains(firstChallenge));
-    expect(session.completedToday, isNot(contains(failedChallenge)));
+    expect(session.completedToday, contains(failedChallenge));
     expect(session.isChallengeSaving(firstChallenge), isFalse);
     expect(session.isChallengeSaving(failedChallenge), isFalse);
+    expect(session.pendingChallengeSyncCount, 1);
+    expect(session.syncError.toString(), contains('request failed'));
+    expect(session.growthPoints, 2);
     expect(backend.progress.growthPoints, 1);
   });
 
@@ -1261,16 +1397,15 @@ void main() {
       final challengeId = _challengeId('day', 0);
       backend.gardenProgressError = StateError('garden query failed');
 
-      await expectLater(
-        session.completeDailyChallenge(challengeId),
-        throwsA(isA<ChallengeProgressRefreshException>()),
-      );
+      expect(await session.completeDailyChallenge(challengeId), isTrue);
 
       expect(session.completedToday, contains(challengeId));
-      expect(session.growthPoints, 0);
+      expect(session.growthPoints, 1);
       expect(backend.progress.growthPoints, 1);
       expect(backend.completedChallenges, [('2026-10-27', challengeId)]);
       expect(session.isChallengeSaving(challengeId), isFalse);
+      expect(session.pendingChallengeSyncCount, 0);
+      expect(session.syncError.toString(), contains('garden query failed'));
     },
   );
 
@@ -1297,7 +1432,14 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(session.isChallengeSaving(firstChallenge), isTrue);
 
-      expect(await session.completeDailyChallenge(secondChallenge), isTrue);
+      final secondCompletion = session.completeDailyChallenge(secondChallenge);
+      for (
+        var attempt = 0;
+        attempt < 50 && session.completedToday.length < 2;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
       expect(
         session.completedToday,
         containsAll([firstChallenge, secondChallenge]),
@@ -1306,6 +1448,7 @@ void main() {
 
       firstProgressGate.complete();
       expect(await firstCompletion, isTrue);
+      expect(await secondCompletion, isTrue);
       expect(
         session.completedToday,
         containsAll([firstChallenge, secondChallenge]),
@@ -1316,77 +1459,70 @@ void main() {
     },
   );
 
-  testWidgets(
-    'completed challenge stays at bottom while another challenge is saving',
-    (tester) async {
-      final backend = _FakeSupabaseDataService([
-        _dailyContent('2026-10-27', 'day'),
-      ]);
-      final session = AppSession(
-        LocalDataService(),
-        clock: () => DateTime(2026, 10, 27, 12),
-        backend: backend,
-      );
-      await tester.runAsync(session.initialize);
+  testWidgets('local completion appears while the backend sync is waiting', (
+    tester,
+  ) async {
+    final backend = _FakeSupabaseDataService([
+      _dailyContent('2026-10-27', 'day'),
+    ])..completionError = StateError('offline');
+    final session = AppSession(
+      LocalDataService(),
+      clock: () => DateTime(2026, 10, 27, 12),
+      backend: backend,
+    );
+    await tester.runAsync(session.initialize);
 
-      final firstChallenge = _challengeId('day', 0);
-      final secondChallenge = _challengeId('day', 1);
-      expect(await session.completeDailyChallenge(firstChallenge), isTrue);
-
-      final requestGate = Completer<void>();
-      backend.completionGate = requestGate;
-      final secondCompletion = session.completeDailyChallenge(secondChallenge);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: AnimatedBuilder(
-              animation: session,
-              builder: (context, _) => DailyChallengesScreen(session: session),
-            ),
+    final firstChallenge = _challengeId('day', 0);
+    final secondChallenge = _challengeId('day', 1);
+    expect(
+      await tester.runAsync(
+        () => session.completeDailyChallenge(firstChallenge),
+      ),
+      isTrue,
+    );
+    expect(
+      await tester.runAsync(
+        () => session.completeDailyChallenge(secondChallenge),
+      ),
+      isTrue,
+    );
+    expect(session.completedToday, {firstChallenge, secondChallenge});
+    expect(session.dailyChallenges[1].title, 'day challenge 1');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnimatedBuilder(
+            animation: session,
+            builder: (context, _) => DailyChallengesScreen(session: session),
           ),
         ),
-      );
-      await tester.pump();
+      ),
+    );
+    await tester.scrollUntilVisible(
+      find.text('day challenge 1'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.scrollUntilVisible(
+      find.text('day challenge 0'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('day challenge 1'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('day challenge 0'), findsOneWidget);
+    expect(find.text('DONE'), findsNWidgets(2));
+    expect(find.text('Undo'), findsNWidgets(2));
+    expect(
+      session.completedToday,
+      containsAll([firstChallenge, secondChallenge]),
+    );
+    expect(session.pendingChallengeSyncCount, 2);
+    expect(tester.takeException(), isNull);
 
-      await tester.scrollUntilVisible(
-        find.text('Saving…'),
-        240,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(find.text('Saving…'), findsOneWidget);
-      expect(session.isChallengeSaving(secondChallenge), isTrue);
-      await tester.scrollUntilVisible(
-        find.text('Completed'),
-        240,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.scrollUntilVisible(
-        find.text('day challenge 0'),
-        240,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(find.text('Completed'), findsOneWidget);
-      expect(find.text('day challenge 0'), findsOneWidget);
-      expect(find.text('DONE'), findsOneWidget);
-      expect(find.text('Undo'), findsOneWidget);
-      expect(session.isChallengeSaving(secondChallenge), isTrue);
-      expect(session.completedToday, contains(firstChallenge));
-
-      requestGate.complete();
-      expect(await secondCompletion, isTrue);
-      await tester.pumpAndSettle();
-      expect(
-        session.completedToday,
-        containsAll([firstChallenge, secondChallenge]),
-      );
-      expect(find.text('DONE'), findsNWidgets(2));
-      expect(find.text('Undo'), findsNWidgets(2));
-      expect(tester.takeException(), isNull);
-
-      await tester.pumpWidget(const SizedBox());
-      session.dispose();
-    },
-  );
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
 
   testWidgets('reopening the challenges screen restores undo state', (
     tester,
@@ -1401,7 +1537,10 @@ void main() {
     );
     await tester.runAsync(session.initialize);
     final challengeId = _challengeId('day', 0);
-    expect(await session.completeDailyChallenge(challengeId), isTrue);
+    expect(
+      await tester.runAsync(() => session.completeDailyChallenge(challengeId)),
+      isTrue,
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1449,7 +1588,7 @@ void main() {
     );
     await tester.runAsync(session.initialize);
     final challengeId = _challengeId('day', 0);
-    await session.completeDailyChallenge(challengeId);
+    await tester.runAsync(() => session.completeDailyChallenge(challengeId));
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1470,7 +1609,18 @@ void main() {
     await tester.ensureVisible(find.text('Undo'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Undo'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    expect(session.isChallengeUndoing(challengeId), isTrue);
+    await tester.runAsync(() async {
+      for (
+        var attempt = 0;
+        attempt < 50 && session.isChallengeUndoing(challengeId);
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pump();
 
     expect(session.completedToday, isNot(contains(challengeId)));
     expect(session.lifetimeGrowthPoints, 0);
@@ -1515,13 +1665,12 @@ void main() {
     },
   );
 
-  testWidgets('challenge card shows loading until backend confirms', (
+  testWidgets('challenge is marked done before its backend sync completes', (
     tester,
   ) async {
-    final requestGate = Completer<void>();
     final backend = _FakeSupabaseDataService([
       _dailyContent('2026-10-27', 'day'),
-    ])..completionGate = requestGate;
+    ])..completionError = StateError('offline');
     final session = AppSession(
       LocalDataService(),
       clock: () => DateTime(2026, 10, 27, 12),
@@ -1541,19 +1690,31 @@ void main() {
 
     await tester.tap(find.text('Got it').first);
     await tester.pump();
-    expect(find.text('Saving…'), findsOneWidget);
-    expect(find.text('Undo'), findsNothing);
-    expect(session.isChallengeSaving(_challengeId('day', 0)), isTrue);
-
-    requestGate.complete();
-    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
+      for (
+        var attempt = 0;
+        attempt < 50 &&
+            !session.completedToday.contains(_challengeId('day', 0));
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
     await tester.scrollUntilVisible(
-      find.text('Undo'),
+      find.text('DONE'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('Undo'), findsOneWidget);
     expect(find.text('DONE'), findsOneWidget);
+    expect(find.text('Undo'), findsOneWidget);
+    expect(find.text('Saving…'), findsNothing);
+    expect(session.isChallengeSaving(_challengeId('day', 0)), isTrue);
+    expect(session.completedToday, contains(_challengeId('day', 0)));
+    expect(session.pendingChallengeSyncCount, 1);
     expect(session.completedToday, contains(_challengeId('day', 0)));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -1721,6 +1882,9 @@ class _FakeSupabaseDataService extends SupabaseDataService {
     activeFlowerId: 'flower-01',
   );
   GardenProgressData get progress => _progress;
+
+  @override
+  String? get authenticatedUserId => 'test-user';
 
   void setDailyContent(DailyContent content) {
     dailyContentOverride = content;

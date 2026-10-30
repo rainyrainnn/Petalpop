@@ -46,8 +46,11 @@ class AppSession extends ChangeNotifier {
   final Set<String> _completedChallengeIds = {};
   final Map<String, List<String>> _dailyCompletions = {};
   final Set<String> _authoritativeCompletionDates = {};
+  final Set<String> _pendingChallengeDates = {};
   final Map<String, String?> _flowerUnlockDates = {};
   final Set<String> _pendingDailyChallengeIds = {};
+  final Set<String> _pendingUndoChallengeIds = {};
+  final Map<int, bool> _synchronizedChallengeResults = {};
   List<GardenFlower> _flowerCatalog = flowers;
   String? _activeFlowerId;
   int _growthPoints = 0;
@@ -58,9 +61,13 @@ class AppSession extends ChangeNotifier {
   Timer? _dateRefreshTimer;
   String? _lastObservedDateKey;
   DateTime? _lastBackendDateCheck;
+  Future<void>? _pendingSyncFuture;
+  Future<void> _challengeMutationTail = Future<void>.value();
+  int _pendingChallengeOperationCount = 0;
   bool _isDisposed = false;
   bool isLoading = true;
   Object? loadError;
+  Object? syncError;
   Object? notificationError;
 
   static const challenges = <DailyChallenge>[
@@ -600,13 +607,14 @@ class AppSession extends ChangeNotifier {
   Set<String> get completedToday =>
       Set.unmodifiable(_dailyCompletions[dailyContentDate] ?? const <String>[]);
   int get completedTodayCount => completedToday.length;
+  int get pendingChallengeSyncCount => _pendingChallengeOperationCount;
   bool get isDailyChallengeComplete =>
       dailyChallenges.isNotEmpty &&
       completedToday.length == dailyChallenges.length;
   bool isChallengeSaving(String challengeId) =>
       _pendingDailyChallengeIds.contains(challengeId);
   bool isChallengeUndoing(String challengeId) =>
-      _pendingDailyChallengeIds.contains(challengeId);
+      _pendingUndoChallengeIds.contains(challengeId);
 
   List<MoodEntry> get moodEntries => List.unmodifiable(_moodEntries);
   List<MemoryEntry> get memories => List.unmodifiable(_memories);
@@ -699,6 +707,7 @@ class AppSession extends ChangeNotifier {
     _lastBackendDateCheck = DateTime.now();
     unawaited(_refreshBackendDailyContent());
     unawaited(refreshNotifications());
+    unawaited(syncPendingChanges());
   }
 
   Future<void> refreshNotifications() async {
@@ -773,16 +782,23 @@ class AppSession extends ChangeNotifier {
                     const Duration(minutes: 15))) {
           _lastBackendDateCheck = DateTime.now();
           unawaited(_checkBackendDailyContentDate());
+          unawaited(syncPendingChanges());
         }
       });
       if (backend != null) {
         try {
           await _loadCachedBackendState();
+          await _restorePendingChallengeOperations();
         } catch (error) {
           loadError = error;
         }
         isLoading = false;
         _notifyListenersIfAlive();
+        await syncPendingChanges();
+        if (_pendingChallengeOperationCount > 0) {
+          await refreshNotifications();
+          return;
+        }
         try {
           await _loadBackendState();
           loadError = null;
@@ -849,154 +865,46 @@ class AppSession extends ChangeNotifier {
 
   Future<bool> undoDailyChallenge(String challengeId) async {
     if (!_pendingDailyChallengeIds.add(challengeId)) return false;
+    _pendingUndoChallengeIds.add(challengeId);
     _notifyListenersIfAlive();
     try {
       return await _undoDailyChallenge(challengeId);
     } finally {
       _pendingDailyChallengeIds.remove(challengeId);
+      _pendingUndoChallengeIds.remove(challengeId);
       _notifyListenersIfAlive();
     }
   }
 
   Future<bool> _undoDailyChallenge(String challengeId) async {
-    if (backend != null) {
-      final content = await backend!.loadDailyContent();
-      _setBackendDailyContent(content);
-      final beforeUndo = List<String>.of(
-        _dailyCompletions[content.date] ?? const <String>[],
-      );
-      final authoritativeBefore = await _loadAuthoritativeCompletions(
-        content.date,
-      );
-      _logUndoDiagnostic(
-        'selectedChallenge=$challengeId assignedDate=${content.date} '
-        'completedBefore=${authoritativeBefore.length} '
-        'records=$authoritativeBefore localBefore=${beforeUndo.length} '
-        'localRecords=$beforeUndo.',
-      );
-      if (!content.challenges.any((challenge) => challenge.id == challengeId)) {
-        throw StateError(
-          'This challenge is no longer assigned for ${content.date}; its '
-          'completion cannot be undone from today.',
-        );
-      }
-      if (!authoritativeBefore.contains(challengeId)) {
-        return false;
-      }
-      late final bool wasUndone;
+    final date = dailyContentDate;
+    if (_isAuthenticatedBackend &&
+        !(_dailyCompletions[date]?.contains(challengeId) ?? false)) {
       try {
-        wasUndone = await backend!.undoChallenge(content.date, challengeId);
+        await _loadAuthoritativeCompletions(date);
       } catch (error) {
-        _logUndoDiagnostic(
-          'RPC failed; reconciling selectedChallenge=$challengeId '
-          'assignedDate=${content.date} errorType=${error.runtimeType}.',
-        );
-        try {
-          final latestCompletions = await _loadAuthoritativeCompletions(
-            content.date,
-          );
-          _logUndoDiagnostic(
-            'completedAfterRefresh=${latestCompletions.length} '
-            'records=$latestCompletions.',
-          );
-          await _loadBackendGardenProgress(
-            allowGrowthRollback: true,
-            replacedCompletionDate: content.date,
-            completionsForReplacedDate: latestCompletions,
-          );
-          await refreshNotifications();
-          _notifyListenersIfAlive();
-        } catch (refreshError) {
-          throw StateError(
-            'Undo request failed: $error. Refreshing the challenge and '
-            'garden state also failed: $refreshError',
-          );
-        }
-        rethrow;
-      }
-      if (!wasUndone) {
-        final latestCompletions = await _loadAuthoritativeCompletions(
-          content.date,
-        );
-        _logUndoDiagnostic(
-          'RPC reported no deletion; completedAfterRefresh='
-          '${latestCompletions.length} records=$latestCompletions.',
-        );
-        await _loadBackendGardenProgress(
-          allowGrowthRollback: true,
-          replacedCompletionDate: content.date,
-          completionsForReplacedDate: latestCompletions,
-        );
+        syncError = error;
         _notifyListenersIfAlive();
         return false;
       }
-      late final List<String> remainingCompletions;
-      try {
-        remainingCompletions = await _loadAuthoritativeCompletions(
-          content.date,
-        );
-      } catch (error) {
-        final knownRemaining = (_dailyCompletions[content.date] ?? [])
-            .where((id) => id != challengeId)
-            .toList();
-        _replaceDailyCompletions(content.date, knownRemaining);
-        try {
-          await _loadBackendGardenProgress(
-            allowGrowthRollback: true,
-            replacedCompletionDate: content.date,
-            completionsForReplacedDate: knownRemaining,
-          );
-          await refreshNotifications();
-          _notifyListenersIfAlive();
-        } catch (refreshError) {
-          throw StateError(
-            'The backend undid "$challengeId" for ${content.date}, but the '
-            'completion query failed: $error. Garden refresh also failed: '
-            '$refreshError',
-          );
-        }
-        throw StateError(
-          'The backend undid "$challengeId" for ${content.date}, but its '
-          'completion records could not be refreshed. The selected task was '
-          'removed locally and garden progress was refreshed. Original '
-          'Supabase error: $error',
-        );
-      }
-      _logUndoDiagnostic(
-        'completedAfterRefresh=${remainingCompletions.length} '
-        'records=$remainingCompletions.',
-      );
-      if (remainingCompletions.contains(challengeId)) {
-        throw StateError(
-          'The backend confirmed undoing "$challengeId" for ${content.date}, '
-          'but its completion is still present in the authenticated user’s '
-          'records. No local progress was changed.',
-        );
-      }
-      _replaceDailyCompletions(content.date, remainingCompletions);
-      _logUndoDiagnostic(
-        'completedAfterSessionReconcile=${completedToday.length} '
-        'records=${completedToday.toList()} gardenLifetimeBeforeRefresh='
-        '$_lifetimeGrowthPoints.',
-      );
-      _notifyListenersIfAlive();
-      await _loadBackendGardenProgress(
-        allowGrowthRollback: true,
-        replacedCompletionDate: content.date,
-        completionsForReplacedDate: remainingCompletions,
-      );
-      _logUndoDiagnostic(
-        'completedAfterGardenRefresh=${completedToday.length} '
-        'records=${completedToday.toList()} growthPoints=$_growthPoints '
-        'lifetimeGrowth=$_lifetimeGrowthPoints.',
-      );
-      await refreshNotifications();
-      loadError = null;
-      _notifyListenersIfAlive();
-      return true;
     }
+    final completions = _dailyCompletions[date];
+    if (completions == null || !completions.contains(challengeId)) {
+      return false;
+    }
+    if (_isAuthenticatedBackend) {
+      return _queueChallengeOperation(
+        type: ChallengeOperationType.undo,
+        localDate: date,
+        challengeId: challengeId,
+      );
+    }
+    return _serializeChallengeMutation(
+      () => _undoLocalChallenge(date, challengeId),
+    );
+  }
 
-    final date = todayKey;
+  Future<bool> _undoLocalChallenge(String date, String challengeId) async {
     final completions = _dailyCompletions[date];
     if (completions == null || !completions.contains(challengeId)) {
       return false;
@@ -1024,10 +932,6 @@ class AppSession extends ChangeNotifier {
     return true;
   }
 
-  void _logUndoDiagnostic(String message) {
-    if (kDebugMode) debugPrint('[PetalPop undo] $message');
-  }
-
   void _reconcileLocalFlowerUnlocks() {
     final activeFlowerIndex = _lifetimeGrowthPoints ~/ growthStagesPerFlower;
     final unlockedFlowerCount = (activeFlowerIndex + 1).clamp(
@@ -1049,91 +953,29 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<bool> _completeDailyChallenge(String challengeId) async {
-    if (backend != null) {
-      final content = await backend!.loadDailyContent();
-      final assignmentsChanged =
-          _backendDate != content.date ||
-          !_sameChallengeIds(_backendChallenges, content.challenges);
-      _setBackendDailyContent(content);
-      if (assignmentsChanged) _notifyListenersIfAlive();
-      if (!content.challenges.any((challenge) => challenge.id == challengeId)) {
+    final date = dailyContentDate;
+    if (!dailyChallenges.any((challenge) => challenge.id == challengeId)) {
+      if (_isAuthenticatedBackend) {
         throw StateError(
-          'This challenge is no longer assigned for ${content.date}. '
+          'This challenge is no longer assigned for $date. '
           'Refresh the daily challenges and try again.',
         );
       }
-
-      final completedToday = _dailyCompletions[content.date] ?? const [];
-      if (completedToday.contains(challengeId)) return false;
-
-      final completed = await backend!.completeChallenge(
-        content.date,
-        challengeId,
-      );
-      if (!completed) {
-        late final List<String> dailyCompletions;
-        try {
-          dailyCompletions = await backend!.loadDailyChallengeCompletions(
-            content.date,
-          );
-        } catch (error) {
-          throw StateError(
-            'The backend reported challenge "$challengeId" as already completed '
-            'for ${content.date}, but the completion record could not be '
-            'loaded for the authenticated user. Original Supabase error: '
-            '$error',
-          );
-        }
-        if (!dailyCompletions.contains(challengeId)) {
-          throw StateError(
-            'The backend reported challenge "$challengeId" as already '
-            'completed for ${content.date}, but no matching row was returned '
-            'for the authenticated user and backend-assigned date. Refresh '
-            'daily challenges; if this persists, investigate the backend '
-            'completion record.',
-          );
-        }
-        _addDailyCompletion(content.date, challengeId);
-        _notifyListenersIfAlive();
-        try {
-          await _loadBackendGardenProgress();
-          loadError = null;
-        } catch (error) {
-          loadError = error;
-          _notifyListenersIfAlive();
-          throw ChallengeProgressRefreshException(
-            challengeId: challengeId,
-            localDate: content.date,
-            wasAlreadyCompleted: true,
-            cause: error,
-          );
-        }
-        _notifyListenersIfAlive();
-        return false;
-      }
-      _addDailyCompletion(content.date, challengeId);
-      _notifyListenersIfAlive();
-      try {
-        await _loadBackendGardenProgress();
-        loadError = null;
-      } catch (error) {
-        loadError = error;
-        _notifyListenersIfAlive();
-        throw ChallengeProgressRefreshException(
-          challengeId: challengeId,
-          localDate: content.date,
-          wasAlreadyCompleted: false,
-          cause: error,
-        );
-      }
-      await refreshNotifications();
-      return true;
-    }
-
-    final date = todayKey;
-    if (!dailyChallenges.any((challenge) => challenge.id == challengeId)) {
       return false;
     }
+    if (_isAuthenticatedBackend) {
+      return _queueChallengeOperation(
+        type: ChallengeOperationType.complete,
+        localDate: date,
+        challengeId: challengeId,
+      );
+    }
+    return _serializeChallengeMutation(
+      () => _completeLocalChallenge(date, challengeId),
+    );
+  }
+
+  Future<bool> _completeLocalChallenge(String date, String challengeId) async {
     final completedToday = _dailyCompletions.putIfAbsent(date, () => []);
     if (completedToday.contains(challengeId)) return false;
 
@@ -1175,6 +1017,210 @@ class AppSession extends ChangeNotifier {
     }
     _notifyListenersIfAlive();
     return true;
+  }
+
+  bool get _isAuthenticatedBackend => backend?.authenticatedUserId != null;
+
+  Future<T> _serializeChallengeMutation<T>(
+    Future<T> Function() mutation,
+  ) async {
+    final previous = _challengeMutationTail;
+    final finished = Completer<void>();
+    _challengeMutationTail = finished.future;
+    await previous;
+    try {
+      return await mutation();
+    } finally {
+      finished.complete();
+    }
+  }
+
+  Future<bool> _queueChallengeOperation({
+    required ChallengeOperationType type,
+    required String localDate,
+    required String challengeId,
+  }) async {
+    final operationId = await _serializeChallengeMutation(() async {
+      final userId = backend!.authenticatedUserId!;
+      final operationId = await storage.enqueueChallengeOperation(
+        userId: userId,
+        type: type,
+        localDate: localDate,
+        challengeId: challengeId,
+      );
+      _pendingChallengeOperationCount++;
+      _pendingChallengeDates.add(localDate);
+      _authoritativeCompletionDates.add(localDate);
+      syncError = null;
+
+      final changed = type == ChallengeOperationType.complete
+          ? await _completeLocalChallenge(localDate, challengeId)
+          : await _undoLocalChallenge(localDate, challengeId);
+      if (!changed) {
+        await storage.removePendingChallengeOperation(operationId);
+        await _refreshPendingChallengeOperations(userId);
+        return null;
+      }
+
+      _notifyListenersIfAlive();
+      return operationId;
+    });
+    if (operationId == null) return false;
+    await syncPendingChanges();
+    final synchronizedResult = _synchronizedChallengeResults.remove(
+      operationId,
+    );
+    return type == ChallengeOperationType.complete
+        ? synchronizedResult ?? true
+        : true;
+  }
+
+  Future<void> _restorePendingChallengeOperations() async {
+    final userId = backend?.authenticatedUserId;
+    if (userId == null) return;
+    final operations = await storage.loadPendingChallengeOperations(userId);
+    _setPendingChallengeOperations(operations);
+    for (final operation in operations) {
+      _authoritativeCompletionDates.add(operation.localDate);
+      if (operation.type == ChallengeOperationType.complete) {
+        await _completeLocalChallenge(
+          operation.localDate,
+          operation.challengeId,
+        );
+      } else {
+        await _undoLocalChallenge(operation.localDate, operation.challengeId);
+      }
+    }
+    if (operations.isNotEmpty) await _saveGardenProgress();
+  }
+
+  Future<void> syncPendingChanges() {
+    if (!_isAuthenticatedBackend) return Future<void>.value();
+    final activeSync = _pendingSyncFuture;
+    if (activeSync != null) {
+      return () async {
+        await activeSync;
+        if (_pendingChallengeOperationCount > 0 && syncError == null) {
+          await syncPendingChanges();
+        }
+      }();
+    }
+    late final Future<void> trackedSync;
+    trackedSync = _syncPendingChallengeOperations().whenComplete(() {
+      if (identical(_pendingSyncFuture, trackedSync)) {
+        _pendingSyncFuture = null;
+      }
+    });
+    _pendingSyncFuture = trackedSync;
+    return trackedSync;
+  }
+
+  Future<void> _syncPendingChallengeOperations() async {
+    final userId = backend!.authenticatedUserId!;
+    try {
+      var operations = await storage.loadPendingChallengeOperations(userId);
+      _setPendingChallengeOperations(operations);
+      if (operations.isEmpty) return;
+      for (final operation in operations) {
+        try {
+          final currentContent = await backend!.loadDailyContent();
+          await storage.saveDailyContentCache(currentContent);
+          _setBackendDailyContent(currentContent);
+          if (currentContent.date != operation.localDate ||
+              !currentContent.challenges.any(
+                (challenge) => challenge.id == operation.challengeId,
+              )) {
+            throw StateError(
+              'The server no longer assigns "${operation.challengeId}" for '
+              '${operation.localDate}. The local change remains pending and '
+              'was not sent.',
+            );
+          }
+
+          late final bool serverChanged;
+          List<String>? serverCompletions;
+          if (operation.type == ChallengeOperationType.complete) {
+            serverChanged = await backend!.completeChallenge(
+              operation.localDate,
+              operation.challengeId,
+            );
+            if (!serverChanged) {
+              serverCompletions = await backend!.loadDailyChallengeCompletions(
+                operation.localDate,
+              );
+              if (!serverCompletions.contains(operation.challengeId)) {
+                throw StateError(
+                  'Supabase reported "${operation.challengeId}" as already '
+                  'completed for ${operation.localDate}, but no matching '
+                  'completion row was found. The change remains pending.',
+                );
+              }
+            }
+          } else {
+            serverChanged = await backend!.undoChallenge(
+              operation.localDate,
+              operation.challengeId,
+            );
+            serverCompletions = await backend!.loadDailyChallengeCompletions(
+              operation.localDate,
+            );
+            if (serverCompletions.contains(operation.challengeId)) {
+              throw StateError(
+                'Supabase did not remove "${operation.challengeId}" for '
+                '${operation.localDate}. The undo remains pending.',
+              );
+            }
+          }
+
+          await storage.removePendingChallengeOperation(operation.id);
+          _synchronizedChallengeResults[operation.id] = serverChanged;
+          operations = await storage.loadPendingChallengeOperations(userId);
+          _setPendingChallengeOperations(operations);
+          if (serverCompletions != null &&
+              !operations.any(
+                (pending) => pending.localDate == operation.localDate,
+              )) {
+            _replaceDailyCompletions(operation.localDate, serverCompletions);
+          }
+        } catch (error) {
+          syncError = error;
+          _notifyListenersIfAlive();
+          return;
+        }
+      }
+
+      if (_pendingChallengeOperationCount == 0) {
+        try {
+          final progress = await backend!.loadGardenProgress();
+          _replaceGardenProgress(progress, allowGrowthRollback: true);
+          await _saveGardenProgress();
+          syncError = null;
+        } catch (error) {
+          syncError = error;
+        }
+        await refreshNotifications();
+      }
+      _notifyListenersIfAlive();
+    } catch (error) {
+      syncError = error;
+      _notifyListenersIfAlive();
+    }
+  }
+
+  Future<void> _refreshPendingChallengeOperations(String userId) async {
+    _setPendingChallengeOperations(
+      await storage.loadPendingChallengeOperations(userId),
+    );
+  }
+
+  void _setPendingChallengeOperations(
+    List<PendingChallengeOperation> operations,
+  ) {
+    _pendingChallengeOperationCount = operations.length;
+    _pendingChallengeDates
+      ..clear()
+      ..addAll(operations.map((operation) => operation.localDate));
+    _authoritativeCompletionDates.addAll(_pendingChallengeDates);
   }
 
   Future<void> _saveGardenProgress() => storage.saveGardenProgress(
@@ -1224,7 +1270,7 @@ class AppSession extends ChangeNotifier {
       return;
     }
 
-    if (backend == null) {
+    if (!_isAuthenticatedBackend) {
       _flowerUnlockDates.putIfAbsent(_flowerCatalog.first.id, () => null);
       final dailyCompletionCount = _dailyCompletions.values.fold<int>(
         0,
@@ -1246,7 +1292,7 @@ class AppSession extends ChangeNotifier {
       0,
       _flowerCatalog.length,
     );
-    if (backend == null) {
+    if (!_isAuthenticatedBackend) {
       for (var index = 0; index < unlockedFlowerCount; index++) {
         _flowerUnlockDates.putIfAbsent(_flowerCatalog[index].id, () => null);
       }
@@ -1325,15 +1371,21 @@ class AppSession extends ChangeNotifier {
       backend!.loadMoods(),
       backend!.loadMemories(),
     ]);
+    final pendingOperations = await storage.loadPendingChallengeOperations(
+      backend!.authenticatedUserId ?? 'guest',
+    );
+    _setPendingChallengeOperations(pendingOperations);
     await storage.saveDailyContentCache(dailyContent);
-    await storage.saveGardenProgress(results[0] as GardenProgressData);
     await storage.saveMoods(results[1] as List<MoodEntry>);
     await storage.saveMemories(results[2] as List<MemoryEntry>);
     _setBackendDailyContent(dailyContent);
-    _replaceGardenProgress(
-      results[0] as GardenProgressData,
-      replaceAllCompletions: true,
-    );
+    if (pendingOperations.isEmpty) {
+      await storage.saveGardenProgress(results[0] as GardenProgressData);
+      _replaceGardenProgress(
+        results[0] as GardenProgressData,
+        replaceAllCompletions: true,
+      );
+    }
     _moodEntries
       ..clear()
       ..addAll(results[1] as List<MoodEntry>);
@@ -1415,23 +1467,6 @@ class AppSession extends ChangeNotifier {
     }
   }
 
-  Future<void> _loadBackendGardenProgress({
-    bool allowGrowthRollback = false,
-    bool? replaceAllCompletions,
-    String? replacedCompletionDate,
-    List<String>? completionsForReplacedDate,
-  }) async {
-    final progress = await backend!.loadGardenProgress();
-    _replaceGardenProgress(
-      progress,
-      allowGrowthRollback: allowGrowthRollback,
-      replaceAllCompletions: replaceAllCompletions ?? false,
-      replacedCompletionDate: replacedCompletionDate,
-      completionsForReplacedDate: completionsForReplacedDate,
-    );
-    await _saveGardenProgress();
-  }
-
   void _setBackendDailyContent(DailyContent content) {
     _backendDate = content.date;
     _backendChallenges = content.challenges;
@@ -1471,7 +1506,7 @@ class AppSession extends ChangeNotifier {
     } else {
       _dailyCompletions[date] = List.of(challengeIds);
     }
-    if (backend == null && dailyContentDate == date) {
+    if (!_isAuthenticatedBackend && dailyContentDate == date) {
       _completedChallengeIds
         ..removeWhere(
           (id) =>
@@ -1569,12 +1604,15 @@ class AppSession extends ChangeNotifier {
     } else {
       _flowerUnlockDates.addAll(validUnlocks);
     }
-    if (allowGrowthRollback ||
-        progress.lifetimeGrowthPoints >= _lifetimeGrowthPoints) {
+    if (_pendingChallengeDates.isEmpty &&
+        (allowGrowthRollback ||
+            progress.lifetimeGrowthPoints >= _lifetimeGrowthPoints)) {
       _growthPoints = progress.growthPoints.clamp(0, growthStagesPerFlower - 1);
       _lifetimeGrowthPoints = progress.lifetimeGrowthPoints;
       _activeFlowerId = progress.activeFlowerId;
     }
-    if (backend == null || !allowGrowthRollback) _migrateFlowerProgress();
+    if (!_isAuthenticatedBackend || !allowGrowthRollback) {
+      _migrateFlowerProgress();
+    }
   }
 }

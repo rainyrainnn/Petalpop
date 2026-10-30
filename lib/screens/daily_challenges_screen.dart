@@ -105,6 +105,30 @@ class _DailyChallengesScreenState extends State<DailyChallengesScreen> {
             ],
           ),
         ),
+        if (session.pendingChallengeSyncCount > 0) ...[
+          const SizedBox(height: 12),
+          PetalCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${session.pendingChallengeSyncCount} challenge change(s) '
+                  'saved on this device and waiting to sync.',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                if (session.syncError != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Last sync attempt failed: ${session.syncError}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 18),
         ClipRRect(
           borderRadius: BorderRadius.circular(10),

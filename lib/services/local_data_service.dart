@@ -15,6 +15,24 @@ import '../models/mood_entry.dart';
 import '../models/garden_progress.dart';
 import 'supabase_data_service.dart';
 
+enum ChallengeOperationType { complete, undo }
+
+class PendingChallengeOperation {
+  const PendingChallengeOperation({
+    required this.id,
+    required this.userId,
+    required this.type,
+    required this.localDate,
+    required this.challengeId,
+  });
+
+  final int id;
+  final String userId;
+  final ChallengeOperationType type;
+  final String localDate;
+  final String challengeId;
+}
+
 class LocalDataService {
   LocalDataService({
     this._preferences,
@@ -107,6 +125,54 @@ class LocalDataService {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<int> enqueueChallengeOperation({
+    required String userId,
+    required ChallengeOperationType type,
+    required String localDate,
+    required String challengeId,
+  }) async {
+    final database = await _getDailyContentDatabase();
+    return database.insert('pending_challenge_operations', {
+      'user_id': userId,
+      'operation': type.name,
+      'local_date': localDate,
+      'challenge_id': challengeId,
+    });
+  }
+
+  Future<List<PendingChallengeOperation>> loadPendingChallengeOperations(
+    String userId,
+  ) async {
+    final database = await _getDailyContentDatabase();
+    final rows = await database.query(
+      'pending_challenge_operations',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'id',
+    );
+    return rows
+        .map((row) {
+          final operation = row['operation'] as String;
+          return PendingChallengeOperation(
+            id: row['id'] as int,
+            userId: row['user_id'] as String,
+            type: ChallengeOperationType.values.byName(operation),
+            localDate: row['local_date'] as String,
+            challengeId: row['challenge_id'] as String,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Future<void> removePendingChallengeOperation(int id) async {
+    final database = await _getDailyContentDatabase();
+    await database.delete(
+      'pending_challenge_operations',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<Database> _getDailyContentDatabase() async {
     final existing = _dailyContentDatabase;
     if (existing != null) return existing;
@@ -117,18 +183,38 @@ class LocalDataService {
     final database = await factory.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onCreate: (db, _) async {
-          await db.execute(
-            'CREATE TABLE daily_content_cache ('
-            'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
-          );
+          await _createDailyContentCacheTable(db);
+          await _createPendingChallengeOperationsTable(db);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 1) await _createDailyContentCacheTable(db);
+          if (oldVersion < 2) {
+            await _createPendingChallengeOperationsTable(db);
+          }
         },
       ),
     );
     _dailyContentDatabase = database;
     return database;
   }
+
+  Future<void> _createDailyContentCacheTable(DatabaseExecutor db) => db.execute(
+    'CREATE TABLE daily_content_cache ('
+    'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
+  );
+
+  Future<void> _createPendingChallengeOperationsTable(
+    DatabaseExecutor db,
+  ) => db.execute(
+    'CREATE TABLE pending_challenge_operations ('
+    'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+    'user_id TEXT NOT NULL, '
+    'operation TEXT NOT NULL CHECK (operation IN (\'complete\', \'undo\')), '
+    'local_date TEXT NOT NULL, '
+    'challenge_id TEXT NOT NULL)',
+  );
 
   Future<List<String>> loadCompletedChallenges() async =>
       await preferences.getStringList('garden.completed') ?? [];

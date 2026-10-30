@@ -18,6 +18,8 @@ class SupabaseDataService {
   static const privateBucket = 'petalpop-private';
   final SupabaseClient client;
 
+  String? get authenticatedUserId => client.auth.currentUser?.id;
+
   String get userId {
     final id = client.auth.currentUser?.id;
     if (id == null) throw const AuthException('Sign in is required.');
