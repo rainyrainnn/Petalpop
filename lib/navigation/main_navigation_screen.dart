@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../screens/daily_challenges_screen.dart';
 import '../screens/flower_garden_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/memory_journal_screen.dart';
 import '../screens/mood_checkin_screen.dart';
+import '../screens/notification_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/app_session.dart';
@@ -55,6 +58,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   bool _isSettingsOpen = false;
   bool _isMoodOpen = false;
   bool _isMemoriesOpen = false;
+  bool _isNotificationsOpen = false;
   bool _notificationsEnabled = false;
 
   @override
@@ -81,13 +85,22 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_isSettingsOpen && !_isMoodOpen && !_isMemoriesOpen,
+      canPop:
+          !_isSettingsOpen &&
+          !_isMoodOpen &&
+          !_isMemoriesOpen &&
+          !_isNotificationsOpen,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && (_isSettingsOpen || _isMoodOpen || _isMemoriesOpen)) {
+        if (!didPop &&
+            (_isSettingsOpen ||
+                _isMoodOpen ||
+                _isMemoriesOpen ||
+                _isNotificationsOpen)) {
           setState(() {
             _isSettingsOpen = false;
             _isMoodOpen = false;
             _isMemoriesOpen = false;
+            _isNotificationsOpen = false;
           });
         }
       },
@@ -125,6 +138,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         ? 4
                         : _isMemoriesOpen
                         ? 5
+                        : _isNotificationsOpen
+                        ? 7
                         : _selectedIndex,
                     children: [
                       HomeScreen(
@@ -133,6 +148,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         onOpenMemories: _openMemories,
                         onOpenChallenges: () => _selectTab(1),
                         onOpenGarden: () => _selectTab(2),
+                        onOpenNotifications: _openNotifications,
+                        unreadNotificationCount:
+                            _session.unreadNotificationCount,
                         displayName: widget.displayName,
                         avatarId: widget.avatarId,
                       ),
@@ -178,6 +196,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         onNotificationsChanged: _setNotificationsEnabled,
                         onLogout: widget.onLogout,
                         onBack: () => setState(() => _isSettingsOpen = false),
+                      ),
+                      NotificationScreen(
+                        session: _session,
+                        onBack: () => setState(() {
+                          _isNotificationsOpen = false;
+                          _selectedIndex = 0;
+                        }),
                       ),
                     ],
                   ),
@@ -226,6 +251,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _isSettingsOpen = false;
       _isMoodOpen = false;
       _isMemoriesOpen = false;
+      _isNotificationsOpen = false;
       _selectedIndex = index;
     });
     if (index == 1 || index == 2) {
@@ -239,6 +265,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _isSettingsOpen = false;
       _isMoodOpen = true;
       _isMemoriesOpen = false;
+      _isNotificationsOpen = false;
     });
   }
 
@@ -248,7 +275,19 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _isSettingsOpen = false;
       _isMoodOpen = false;
       _isMemoriesOpen = true;
+      _isNotificationsOpen = false;
     });
+  }
+
+  void _openNotifications() {
+    setState(() {
+      _selectedIndex = 0;
+      _isSettingsOpen = false;
+      _isMoodOpen = false;
+      _isMemoriesOpen = false;
+      _isNotificationsOpen = true;
+    });
+    unawaited(_session.refreshNotifications());
   }
 
   Future<void> _refreshDailyContentAndGarden() async {
@@ -284,9 +323,32 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Help & Support'),
-        content: const Text(
-          'For account or saved-data support, contact the PetalPop support '
-          'team using the email address provided by your app administrator.',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'For account or saved-data support, email the PetalPop support '
+              'team:',
+            ),
+            const SizedBox(height: 8),
+            Semantics(
+              link: true,
+              child: InkWell(
+                onTap: () => _openSupportEmail(context),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    'reynaannjoybausin@gmail.com',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -296,5 +358,28 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _openSupportEmail(BuildContext context) async {
+    try {
+      final opened = await launchUrl(
+        Uri(scheme: 'mailto', path: 'reynaannjoybausin@gmail.com'),
+      );
+      if (opened || !context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No email app is available on this device.'),
+        ),
+      );
+    } on PlatformException catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not open the email app: ${error.message ?? error.code}',
+          ),
+        ),
+      );
+    }
   }
 }

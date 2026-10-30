@@ -1,12 +1,14 @@
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show Color;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/daily_challenge.dart';
 import '../models/garden_flower.dart';
 import '../models/garden_progress.dart';
+import '../models/app_notification.dart';
 import '../models/memory_entry.dart';
 import '../models/mood_entry.dart';
 
@@ -100,33 +102,88 @@ class SupabaseDataService {
   }
 
   Future<bool> undoChallenge(String localDate, String challengeId) async {
-    final result =
-        await client.rpc(
-              'undo_daily_challenge',
-              params: {
-                'p_local_date': localDate,
-                'p_challenge_id': challengeId,
-              },
-            )
-            as List<dynamic>;
-    if (result.length != 1 || result.single is! Map<String, dynamic>) {
-      throw StateError('Challenge undo returned an invalid response.');
+    try {
+      final result =
+          await client.rpc(
+                'undo_daily_challenge',
+                params: {
+                  'p_local_date': localDate,
+                  'p_challenge_id': challengeId,
+                },
+              )
+              as List<dynamic>;
+      if (result.length != 1 || result.single is! Map<String, dynamic>) {
+        _logUndoDiagnostic(
+          'RPC response shape invalid: rowCount=${result.length}.',
+        );
+        throw StateError('Challenge undo returned an invalid response.');
+      }
+      final wasUndone =
+          (result.single as Map<String, dynamic>)['was_undone'] as bool;
+      _logUndoDiagnostic(
+        'RPC success: date=$localDate challenge=$challengeId '
+        'wasUndone=$wasUndone.',
+      );
+      return wasUndone;
+    } catch (error) {
+      _logUndoDiagnostic(
+        'RPC error: date=$localDate challenge=$challengeId '
+        'type=${error.runtimeType} error=${_redactDiagnostic(error.toString())}',
+      );
+      rethrow;
     }
-    return (result.single as Map<String, dynamic>)['was_undone'] as bool;
   }
 
   Future<List<String>> loadDailyChallengeCompletions(String localDate) async {
     final id = userId;
-    final rows = await client
-        .from('challenge_completions')
-        .select('local_date, challenge_id')
-        .eq('user_id', id)
-        .eq('local_date', localDate);
-    return rows
-        .where((row) => row['local_date'] == localDate)
-        .map((row) => row['challenge_id'] as String)
-        .toList(growable: false);
+    try {
+      final rows = await client
+          .from('challenge_completions')
+          .select('local_date, challenge_id')
+          .eq('user_id', id)
+          .eq('local_date', localDate);
+      final challengeIds = rows
+          .where((row) => row['local_date'] == localDate)
+          .map((row) => row['challenge_id'] as String)
+          .toList(growable: false);
+      _logUndoDiagnostic(
+        'Completion query: authenticatedUserFilter=present '
+        'date=$localDate records=$challengeIds count=${challengeIds.length}.',
+      );
+      return challengeIds;
+    } catch (error) {
+      _logUndoDiagnostic(
+        'Completion query error: date=$localDate type=${error.runtimeType} '
+        'error=${_redactDiagnostic(error.toString())}',
+      );
+      rethrow;
+    }
   }
+
+  void _logUndoDiagnostic(String message) {
+    if (kDebugMode) debugPrint('[PetalPop undo] $message');
+  }
+
+  String _redactDiagnostic(String message) => message
+      .replaceAll(
+        RegExp(r'Bearer\s+\S+', caseSensitive: false),
+        'Bearer [REDACTED]',
+      )
+      .replaceAllMapped(
+        RegExp(r'sb_(publishable|secret)_[A-Za-z0-9_-]+'),
+        (match) => 'sb_${match[1]}_[REDACTED]',
+      )
+      .replaceAll(
+        RegExp(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+        '[REDACTED_JWT]',
+      )
+      .replaceAllMapped(
+        RegExp(
+          r'(password|access_token|refresh_token)\s*[:=]\s*\S+',
+          caseSensitive: false,
+        ),
+        (match) => '${match[1]}=[REDACTED]',
+      );
 
   Future<GardenProgressData> loadGardenProgress() async {
     final completionRows = await _loadChallengeCompletionRows();
@@ -246,6 +303,40 @@ class SupabaseDataService {
           ),
         )
         .toList();
+  }
+
+  Future<List<AppNotification>> loadNotifications() async {
+    final rows = await client
+        .from('app_notifications')
+        .select(
+          'id, kind, source_key, title, body, created_at, read_at, retracted_at',
+        )
+        .eq('user_id', userId)
+        .isFilter('retracted_at', null)
+        .order('created_at', ascending: false)
+        .limit(100);
+    return rows
+        .map(
+          (row) => AppNotification(
+            id: row['id'] as String,
+            kind: row['kind'] as String,
+            sourceKey: row['source_key'] as String,
+            title: row['title'] as String,
+            body: row['body'] as String,
+            createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
+            isRead: row['read_at'] != null,
+            isRetracted: row['retracted_at'] != null,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> markNotificationRead(String id) async {
+    await client
+        .from('app_notifications')
+        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', id)
+        .eq('user_id', userId);
   }
 
   Future<void> saveMood(MoodEntry entry) async {

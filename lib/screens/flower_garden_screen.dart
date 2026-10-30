@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/garden_flower.dart';
 import '../services/app_session.dart';
 import '../theme/app_theme.dart';
+import '../widgets/flower_illustration.dart';
 
 class FlowerGardenScreen extends StatelessWidget {
   const FlowerGardenScreen({required this.session, super.key});
@@ -397,18 +398,23 @@ class _GardenLandscapePainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, sky);
 
     final glow = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          const Color(0xFFFFF9D9).withValues(alpha: .95),
-          const Color(0xFFFFE6B9).withValues(alpha: .15),
-        ],
-      ).createShader(
-        Rect.fromCircle(
-          center: Offset(size.width * .84, size.height * .13),
-          radius: size.width * .18,
-        ),
-      );
-    canvas.drawCircle(Offset(size.width * .84, size.height * .13), size.width * .18, glow);
+      ..shader =
+          RadialGradient(
+            colors: [
+              const Color(0xFFFFF9D9).withValues(alpha: .95),
+              const Color(0xFFFFE6B9).withValues(alpha: .15),
+            ],
+          ).createShader(
+            Rect.fromCircle(
+              center: Offset(size.width * .84, size.height * .13),
+              radius: size.width * .18,
+            ),
+          );
+    canvas.drawCircle(
+      Offset(size.width * .84, size.height * .13),
+      size.width * .18,
+      glow,
+    );
     _drawSparkle(canvas, Offset(size.width * .12, size.height * .12), 7);
     _drawSparkle(canvas, Offset(size.width * .68, size.height * .08), 5);
     _drawSparkle(canvas, Offset(size.width * .92, size.height * .25), 6);
@@ -527,10 +533,30 @@ class _GardenLandscapePainter extends CustomPainter {
   void _drawSparkle(Canvas canvas, Offset center, double radius) {
     final sparkle = Path()
       ..moveTo(center.dx, center.dy - radius)
-      ..quadraticBezierTo(center.dx + radius * .2, center.dy - radius * .2, center.dx + radius, center.dy)
-      ..quadraticBezierTo(center.dx + radius * .2, center.dy + radius * .2, center.dx, center.dy + radius)
-      ..quadraticBezierTo(center.dx - radius * .2, center.dy + radius * .2, center.dx - radius, center.dy)
-      ..quadraticBezierTo(center.dx - radius * .2, center.dy - radius * .2, center.dx, center.dy - radius)
+      ..quadraticBezierTo(
+        center.dx + radius * .2,
+        center.dy - radius * .2,
+        center.dx + radius,
+        center.dy,
+      )
+      ..quadraticBezierTo(
+        center.dx + radius * .2,
+        center.dy + radius * .2,
+        center.dx,
+        center.dy + radius,
+      )
+      ..quadraticBezierTo(
+        center.dx - radius * .2,
+        center.dy + radius * .2,
+        center.dx - radius,
+        center.dy,
+      )
+      ..quadraticBezierTo(
+        center.dx - radius * .2,
+        center.dy - radius * .2,
+        center.dx,
+        center.dy - radius,
+      )
       ..close();
     canvas.drawPath(sparkle, Paint()..color = const Color(0xFFFFFEF5));
   }
@@ -605,7 +631,7 @@ class _GardenLandscapePainter extends CustomPainter {
       final y = size.height * (.38 + (i * 19 % 56) / 100);
       canvas.drawLine(
         Offset(x, y),
-        Offset(x + (i.isEven ? 3 : -3),         y - 6 - (i % 4)),
+        Offset(x + (i.isEven ? 3 : -3), y - 6 - (i % 4)),
         grass,
       );
     }
@@ -631,19 +657,18 @@ class _CatalogFlowerIllustration extends StatelessWidget {
   final int variety;
 
   @override
-  Widget build(BuildContext context) => CustomPaint(
-    size: Size.square(size),
-    painter: _CatalogFlowerPainter(
-      color: flower.color,
-      sortOrder: variety,
-      unlocked: unlocked,
-      growthPoints: growthPoints,
-    ),
+  Widget build(BuildContext context) => FlowerIllustration(
+    color: flower.color,
+    growthPoints: growthPoints,
+    variety: variety,
+    petalCount: 12,
+    locked: !unlocked,
+    showPot: false,
   );
 }
 
-class _CatalogFlowerPainter extends CustomPainter {
-  const _CatalogFlowerPainter({
+class LegacyCatalogFlowerPainter extends CustomPainter {
+  const LegacyCatalogFlowerPainter({
     required this.color,
     required this.sortOrder,
     required this.unlocked,
@@ -683,9 +708,7 @@ class _CatalogFlowerPainter extends CustomPainter {
     canvas.drawPath(
       stem,
       Paint()
-        ..color = unlocked
-            ? const Color(0xFF9CCB78)
-            : const Color(0xFFC5C7C8)
+        ..color = unlocked ? const Color(0xFF9CCB78) : const Color(0xFFC5C7C8)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.4
         ..strokeCap = StrokeCap.round,
@@ -897,7 +920,7 @@ class _CatalogFlowerPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _CatalogFlowerPainter oldDelegate) =>
+  bool shouldRepaint(covariant LegacyCatalogFlowerPainter oldDelegate) =>
       oldDelegate.color != color ||
       oldDelegate.sortOrder != sortOrder ||
       oldDelegate.unlocked != unlocked ||

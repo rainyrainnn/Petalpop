@@ -223,7 +223,9 @@ class SettingsScreen extends StatelessWidget {
         Text(
           'Your Daily Happy Space. This version stores mood check-ins, '
           'memories, and challenge progress in memory on this device session. '
-          'Authentication and notifications are not connected.',
+          'Signed-in data uses the configured backend. In-app challenge and '
+          'flower alerts appear in the Home bell after its database migration '
+          'is installed; push notifications are not configured.',
         ),
       ],
     );

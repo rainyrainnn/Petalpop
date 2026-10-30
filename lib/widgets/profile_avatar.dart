@@ -114,6 +114,50 @@ class PetalAvatarChoice {
       hairStyle: 7,
       accessory: 3,
     ),
+    PetalAvatarChoice(
+      id: 'owl',
+      label: 'Pip',
+      background: Color(0xFFE4E2FA),
+      skin: Color(0xFFDFAE8C),
+      hair: Color(0xFF553A50),
+      outfit: Color(0xFF9D8BCF),
+      flower: Color(0xFFFFE08A),
+      hairStyle: 8,
+      accessory: 6,
+    ),
+    PetalAvatarChoice(
+      id: 'deer',
+      label: 'Fawn',
+      background: Color(0xFFF7E5D1),
+      skin: Color(0xFFE9BFA3),
+      hair: Color(0xFF80533F),
+      outfit: Color(0xFFDBA477),
+      flower: Color(0xFFFFD1E4),
+      hairStyle: 9,
+      accessory: 7,
+    ),
+    PetalAvatarChoice(
+      id: 'bee',
+      label: 'Bumble',
+      background: Color(0xFFFFF0C9),
+      skin: Color(0xFFF1C7A3),
+      hair: Color(0xFF6D482C),
+      outfit: Color(0xFFFFC856),
+      flower: Color(0xFFFFF3A8),
+      hairStyle: 10,
+      accessory: 8,
+    ),
+    PetalAvatarChoice(
+      id: 'unicorn',
+      label: 'Lumi',
+      background: Color(0xFFE9E2FF),
+      skin: Color(0xFFF5CEBF),
+      hair: Color(0xFF9B71B8),
+      outfit: Color(0xFFB99AE6),
+      flower: Color(0xFFFFAFCF),
+      hairStyle: 11,
+      accessory: 9,
+    ),
   ];
 
   static PetalAvatarChoice fromId(String id) => choices.firstWhere(
@@ -172,10 +216,14 @@ class _PetalAvatarPainter extends CustomPainter {
 
     if (avatar.hairStyle == 0 ||
         avatar.hairStyle == 3 ||
-        avatar.hairStyle == 6) {
+        avatar.hairStyle == 6 ||
+        avatar.hairStyle == 8 ||
+        avatar.hairStyle == 10) {
       canvas.drawOval(const Rect.fromLTWH(21, 21, 18, 55), hair);
       canvas.drawOval(const Rect.fromLTWH(61, 21, 18, 55), hair);
-    } else if (avatar.hairStyle == 5 || avatar.hairStyle == 7) {
+    } else if (avatar.hairStyle == 5 ||
+        avatar.hairStyle == 7 ||
+        avatar.hairStyle == 9) {
       canvas.drawCircle(const Offset(32, 25), 13, hair);
       canvas.drawCircle(const Offset(68, 25), 13, hair);
     }
@@ -268,6 +316,58 @@ class _PetalAvatarPainter extends CustomPainter {
         canvas.drawOval(const Rect.fromLTWH(21, 32, 13, 37), paint);
         canvas.drawOval(const Rect.fromLTWH(66, 32, 13, 37), paint);
         break;
+      case 8:
+        canvas.drawOval(const Rect.fromLTWH(23, 12, 54, 53), paint);
+        for (final point in [
+          const Offset(29, 22),
+          const Offset(42, 15),
+          const Offset(57, 15),
+          const Offset(71, 23),
+          const Offset(25, 34),
+          const Offset(75, 35),
+        ]) {
+          canvas.drawCircle(point, 8, paint);
+        }
+        break;
+      case 9:
+        canvas.drawCircle(const Offset(30, 21), 15, paint);
+        canvas.drawCircle(const Offset(70, 21), 15, paint);
+        canvas.drawOval(const Rect.fromLTWH(25, 13, 50, 47), paint);
+        final fringe = Path()
+          ..moveTo(27, 38)
+          ..quadraticBezierTo(49, 18, 73, 37)
+          ..quadraticBezierTo(51, 34, 30, 46)
+          ..close();
+        canvas.drawPath(fringe, paint);
+        break;
+      case 10:
+        canvas.drawOval(const Rect.fromLTWH(23, 12, 54, 54), paint);
+        canvas.drawOval(const Rect.fromLTWH(20, 39, 16, 38), paint);
+        canvas.drawOval(const Rect.fromLTWH(64, 39, 16, 38), paint);
+        final fringe = Path()
+          ..moveTo(26, 39)
+          ..quadraticBezierTo(39, 20, 51, 36)
+          ..quadraticBezierTo(65, 17, 74, 39)
+          ..lineTo(69, 46)
+          ..quadraticBezierTo(50, 38, 31, 47)
+          ..close();
+        canvas.drawPath(fringe, paint);
+        break;
+      case 11:
+        final cap = Path()
+          ..moveTo(24, 45)
+          ..quadraticBezierTo(18, 8, 50, 11)
+          ..quadraticBezierTo(82, 8, 76, 45)
+          ..lineTo(66, 38)
+          ..lineTo(59, 48)
+          ..lineTo(50, 38)
+          ..lineTo(40, 48)
+          ..lineTo(33, 38)
+          ..close();
+        canvas.drawPath(cap, paint);
+        canvas.drawOval(const Rect.fromLTWH(21, 35, 15, 41), paint);
+        canvas.drawOval(const Rect.fromLTWH(64, 35, 15, 41), paint);
+        break;
     }
   }
 
@@ -323,6 +423,57 @@ class _PetalAvatarPainter extends CustomPainter {
           paint..color = avatar.flower,
         );
         canvas.drawCircle(const Offset(71, 62), 2.2, paint);
+        break;
+      case 6:
+        _drawFlower(canvas, const Offset(50, 18), 5, avatar.flower);
+        canvas.drawCircle(
+          const Offset(41, 22),
+          2,
+          Paint()..color = const Color(0xFFFFF2C2),
+        );
+        canvas.drawCircle(
+          const Offset(59, 22),
+          2,
+          Paint()..color = const Color(0xFFFFF2C2),
+        );
+        break;
+      case 7:
+        final antlerPaint = Paint()
+          ..color = const Color(0xFF9B704D)
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round
+          ..style = PaintingStyle.stroke;
+        for (final x in [31.0, 69.0]) {
+          canvas.drawLine(Offset(x, 20), Offset(x, 8), antlerPaint);
+          canvas.drawLine(Offset(x, 12), Offset(x - 5, 7), antlerPaint);
+          canvas.drawLine(Offset(x, 14), Offset(x + 5, 9), antlerPaint);
+        }
+        _drawFlower(canvas, const Offset(50, 18), 3.5, avatar.flower);
+        break;
+      case 8:
+        for (final x in [35.0, 50.0, 65.0]) {
+          canvas.drawCircle(
+            Offset(x, 18),
+            3,
+            Paint()..color = const Color(0xFF9C82D2),
+          );
+        }
+        _drawFlower(canvas, const Offset(50, 13), 3, avatar.flower);
+        break;
+      case 9:
+        final horn = Path()
+          ..moveTo(44, 24)
+          ..lineTo(50, 4)
+          ..lineTo(56, 24)
+          ..close();
+        canvas.drawPath(
+          horn,
+          Paint()
+            ..shader = const LinearGradient(
+              colors: [Color(0xFFFFE58D), Color(0xFFFFA8D4)],
+            ).createShader(const Rect.fromLTWH(44, 4, 12, 20)),
+        );
+        _drawFlower(canvas, const Offset(68, 25), 4, avatar.flower);
         break;
     }
   }

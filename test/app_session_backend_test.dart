@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as path;
 import 'package:petalpop/models/daily_challenge.dart';
+import 'package:petalpop/models/app_notification.dart';
 import 'package:petalpop/models/garden_flower.dart';
 import 'package:petalpop/models/garden_progress.dart';
 import 'package:petalpop/models/memory_entry.dart';
@@ -12,46 +15,655 @@ import 'package:petalpop/services/app_session.dart';
 import 'package:petalpop/services/local_data_service.dart';
 import 'package:petalpop/services/supabase_data_service.dart';
 import 'package:petalpop/screens/daily_challenges_screen.dart';
+import 'package:petalpop/screens/notification_screen.dart';
+import 'package:petalpop/theme/app_theme.dart';
+import 'package:petalpop/widgets/challenge_illustration.dart';
+import 'package:petalpop/widgets/profile_avatar.dart';
+import 'package:shared_preferences_platform_interface/in_memory_shared_preferences_async.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_async_platform_interface.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
-  testWidgets(
-    'Home shows an unavailable state when backend daily content fails',
-    (tester) async {
-      final loadFailure = StateError('daily content is unavailable');
-      final backend = _FakeSupabaseDataService([])
-        ..dailyContentError = loadFailure;
-      final session = AppSession(LocalDataService(), backend: backend);
-      await session.initialize();
+late Directory _testDatabaseDirectory;
 
-      expect(session.loadError, same(loadFailure));
-      expect(session.dailyChallenges, isEmpty);
-      expect(session.dailyChallenge, isNull);
+void main() {
+  setUpAll(() async {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+    _testDatabaseDirectory = await Directory.systemTemp.createTemp(
+      'petalpop-test-',
+    );
+    await databaseFactory.setDatabasesPath(_testDatabaseDirectory.path);
+  });
+
+  setUp(() async {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    final database = await databaseFactory.openDatabase(
+      path.join(_testDatabaseDirectory.path, 'petalpop_offline.db'),
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, _) async {
+          await db.execute(
+            'CREATE TABLE daily_content_cache ('
+            'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
+          );
+        },
+      ),
+    );
+    await database.delete('daily_content_cache');
+    await database.close();
+  });
+
+  tearDownAll(() async {
+    await databaseFactory.deleteDatabase(
+      path.join(_testDatabaseDirectory.path, 'petalpop_offline.db'),
+    );
+    await _testDatabaseDirectory.delete(recursive: true);
+  });
+
+  test('avatar IDs and labels use the requested stable picker order', () {
+    expect(
+      PetalAvatarChoice.choices
+          .map((avatar) => (avatar.id, avatar.label))
+          .toList(),
+      [
+        ('girl', 'Daisy'),
+        ('boy', 'Sunny'),
+        ('curly', 'Clover'),
+        ('bunny', 'Bunny'),
+        ('cat', 'Kitty'),
+        ('bear', 'Bear'),
+        ('fox', 'Fox'),
+        ('frog', 'Froggy'),
+        ('owl', 'Pip'),
+        ('deer', 'Fawn'),
+        ('bee', 'Bumble'),
+        ('unicorn', 'Lumi'),
+      ],
+    );
+  });
+
+  testWidgets('View Garden action invokes the existing navigation callback', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(400, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    final backend = _FakeSupabaseDataService([
+      _dailyContent('2026-10-27', 'day'),
+    ]);
+    final session = AppSession(
+      LocalDataService(),
+      clock: () => DateTime(2026, 10, 27, 12),
+      backend: backend,
+    );
+    await tester.runAsync(session.initialize);
+    var gardenOpenCount = 0;
+    var notificationOpenCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: HomeScreen(
+            session: session,
+            onOpenMood: () {},
+            onOpenMemories: () {},
+            onOpenChallenges: () {},
+            onOpenGarden: () => gardenOpenCount++,
+            displayName: 'Sunshine',
+            avatarId: 'girl',
+            onOpenNotifications: () => notificationOpenCount++,
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('home-view-garden')), findsOneWidget);
+    await tester.tap(find.byTooltip('Notifications'));
+    expect(notificationOpenCount, 1);
+    await tester.tap(find.byKey(const ValueKey('home-view-garden')));
+    expect(gardenOpenCount, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
+
+  testWidgets(
+    'notifications load, mark read, and stay read after a new session',
+    (tester) async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      backend.notifications.add(
+        AppNotification(
+          id: 'notice-1',
+          kind: 'challenge_completed',
+          sourceKey: 'challenge:2026-10-27:drink-water:notice-1',
+          title: 'Challenge completed',
+          body: 'A real completion event.',
+          createdAt: DateTime(2026, 10, 27),
+          isRead: false,
+        ),
+      );
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      await tester.runAsync(session.initialize);
+      expect(session.unreadNotificationCount, 1);
 
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: HomeScreen(
-              session: session,
-              onOpenMood: () {},
-              onOpenMemories: () {},
-              onOpenChallenges: () {},
-              onOpenGarden: () {},
-              displayName: 'Sunshine',
-              avatarId: 'girl',
+            body: AnimatedBuilder(
+              animation: session,
+              builder: (context, _) =>
+                  NotificationScreen(session: session, onBack: () {}),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Challenge completed'), findsOneWidget);
+      expect(find.text('Mark as read'), findsOneWidget);
+      await tester.tap(find.text('Mark as read'));
+      await tester.pumpAndSettle();
+      expect(session.unreadNotificationCount, 0);
+      expect(find.text('Mark as read'), findsNothing);
+      session.dispose();
+      await tester.pumpWidget(const SizedBox());
+
+      final restartedSession = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      await tester.runAsync(restartedSession.initialize);
+      expect(restartedSession.notifications.single.isRead, isTrue);
+      restartedSession.dispose();
+
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('notifications show an honest empty state', (tester) async {
+    final backend = _FakeSupabaseDataService([
+      _dailyContent('2026-10-27', 'day'),
+    ]);
+    final session = AppSession(
+      LocalDataService(),
+      clock: () => DateTime(2026, 10, 27, 12),
+      backend: backend,
+    );
+    await tester.runAsync(session.initialize);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: NotificationScreen(session: session, onBack: () {}),
+        ),
+      ),
+    );
+
+    expect(find.text('All quiet in the garden'), findsOneWidget);
+    expect(find.text('Challenge completed'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
+
+  test(
+    'signed-in session restores cached data when Supabase is offline',
+    () async {
+      final seedStorage = LocalDataService();
+      final content = _dailyContent('2026-10-27', 'cached');
+      final completed = _challengeId('cached', 1);
+      await seedStorage.saveDailyContentCache(content);
+      await seedStorage.saveGardenProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-27': [completed],
+          },
+          flowerUnlockDates: {'flower-01': null, 'flower-02': '2026-10-20'},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-02',
+          growthPoints: 2,
+          lifetimeGrowthPoints: 12,
+        ),
+      );
+      await seedStorage.saveMoods([
+        MoodEntry(
+          mood: 'Calm',
+          emoji: '🌿',
+          note: 'Taking it slowly.',
+          createdAt: DateTime(2026, 10, 27, 9),
+        ),
+      ]);
+      await seedStorage.saveMemories([
+        MemoryEntry(
+          id: 'offline-note',
+          type: MemoryType.note,
+          title: 'A saved note',
+          description: 'Still available offline.',
+          createdAt: DateTime(2026, 10, 27, 10),
+        ),
+      ]);
+
+      final offlineError = StateError('Supabase is unreachable.');
+      final backend = _FakeSupabaseDataService([content])
+        ..dailyContentError = offlineError;
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+
+      await session.initialize();
+
+      expect(session.isLoading, isFalse);
+      expect(session.loadError, same(offlineError));
+      expect(session.dailyChallenges.map((challenge) => challenge.id), [
+        for (var index = 0; index < AppSession.dailyChallengeCount; index++)
+          _challengeId('cached', index),
+      ]);
+      expect(session.completedToday, {completed});
+      expect(session.growthPoints, 2);
+      expect(session.lifetimeGrowthPoints, 12);
+      expect(session.moodEntries, hasLength(1));
+      expect(session.memories.single.title, 'A saved note');
+    },
+  );
+
+  test(
+    'offline cache without a saved flower catalog keeps garden progress',
+    () async {
+      final storage = LocalDataService();
+      await storage.saveGardenProgress(
+        GardenProgressData(
+          flowerUnlockDates: {'flower-01': null, 'flower-02': '2026-10-20'},
+          activeFlowerId: 'flower-02',
+          growthPoints: 2,
+          lifetimeGrowthPoints: 12,
+        ),
+      );
+      final backend = _FakeSupabaseDataService([])
+        ..dailyContentError = StateError('Supabase is unreachable.');
+      final session = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+
+      await session.initialize();
+
+      expect(session.flowerCatalog, AppSession.flowers);
+      expect(session.activeFlowerId, 'flower-02');
+      expect(session.growthPoints, 2);
+      expect(session.lifetimeGrowthPoints, 12);
+    },
+  );
+
+  test(
+    'undoing one of three completions preserves others through reload',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+
+      final selected = _challengeId('day', 0);
+      final preserved = _challengeId('day', 1);
+      final alsoPreserved = _challengeId('day', 2);
+      await session.completeDailyChallenge(selected);
+      await session.completeDailyChallenge(preserved);
+      await session.completeDailyChallenge(alsoPreserved);
+      expect(session.growthPoints, 3);
+
+      expect(await session.undoDailyChallenge(selected), isTrue);
+      expect(session.completedToday, contains(preserved));
+      expect(session.completedToday, contains(alsoPreserved));
+      expect(session.completedToday, isNot(contains(selected)));
+      expect(session.growthPoints, 2);
+      expect(session.lifetimeGrowthPoints, 2);
+      expect(backend.progress.dailyCompletions['2026-10-27'], [
+        preserved,
+        alsoPreserved,
+      ]);
+      expect(backend.undoneChallenges, [('2026-10-27', selected)]);
+
+      final reloadedSession = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(reloadedSession.dispose);
+      await reloadedSession.initialize();
+      expect(reloadedSession.completedToday, {preserved, alsoPreserved});
+      expect(reloadedSession.growthPoints, 2);
+      expect(reloadedSession.lifetimeGrowthPoints, 2);
+    },
+  );
+
+  test(
+    'garden refresh cannot restore undone completion or replace another date',
+    () async {
+      final previousDateChallenge = _challengeId('day', 2);
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      backend.setProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-26': [previousDateChallenge],
+          },
+          flowerUnlockDates: {'flower-01': null},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-01',
+        ),
+      );
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+
+      final selected = _challengeId('day', 0);
+      final preserved = _challengeId('day', 1);
+      await session.completeDailyChallenge(selected);
+      await session.completeDailyChallenge(preserved);
+      expect(await session.undoDailyChallenge(selected), isTrue);
+
+      backend.gardenCompletionOverride = {
+        '2026-10-27': [selected, preserved],
+        '2026-10-26': [previousDateChallenge],
+      };
+      await session.refreshDailyChallenges();
+
+      expect(session.completedToday, {preserved});
+      expect(session.completedChallengeCount, 2);
+      expect(session.lifetimeGrowthPoints, 1);
+
+      backend.setDailyContent(_dailyContent('2026-10-26', 'day'));
+      await session.refreshDailyChallenges();
+      expect(session.completedToday, {previousDateChallenge});
+    },
+  );
+
+  test(
+    'undo refreshes authoritative completion rows before calling the RPC',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final selected = _challengeId('day', 0);
+      final preserved = _challengeId('day', 1);
+      final alsoPreserved = _challengeId('day', 2);
+      backend.setProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-27': [selected, preserved, alsoPreserved],
+          },
+          flowerUnlockDates: {'flower-01': null},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-01',
+          growthPoints: 3,
+          lifetimeGrowthPoints: 3,
+        ),
+      );
+      backend.gardenCompletionOverride = {
+        '2026-10-27': [selected],
+      };
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+      expect(session.completedToday, {selected});
+
+      expect(await session.undoDailyChallenge(selected), isTrue);
+      expect(backend.undoneChallenges, [('2026-10-27', selected)]);
+      expect(session.completedToday, {preserved, alsoPreserved});
+      expect(session.growthPoints, 2);
+      expect(session.lifetimeGrowthPoints, 2);
+
+      backend.gardenCompletionOverride = null;
+      final reloadedSession = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(reloadedSession.dispose);
+      await reloadedSession.initialize();
+      expect(reloadedSession.completedToday, {preserved, alsoPreserved});
+      expect(reloadedSession.growthPoints, 2);
+    },
+  );
+
+  test(
+    'undo refresh preserves other dates and previously unlocked flowers',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final previousDayChallenge = _challengeId('day', 2);
+      backend.setProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-26': [previousDayChallenge],
+          },
+          flowerUnlockDates: {'flower-01': null, 'flower-02': '2026-10-20'},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-02',
+          growthPoints: 2,
+          lifetimeGrowthPoints: 12,
+        ),
+      );
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+
+      final selected = _challengeId('day', 0);
+      final preserved = _challengeId('day', 1);
+      await session.completeDailyChallenge(selected);
+      await session.completeDailyChallenge(preserved);
+      backend.omitGardenCompletionDates.add('2026-10-26');
+
+      expect(await session.undoDailyChallenge(selected), isTrue);
+      expect(session.completedToday, contains(preserved));
+      expect(session.completedToday, isNot(contains(selected)));
+      expect(session.completedChallengeCount, 2);
+      expect(session.lifetimeGrowthPoints, 13);
+      expect(session.growthPoints, 3);
+      expect(session.unlockedFlowerCount, 2);
+      expect(session.flowerUnlockDates['flower-02'], '2026-10-20');
+    },
+  );
+
+  test(
+    'failed undo refreshes state and keeps the selected task unchanged',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+      final selected = _challengeId('day', 0);
+      await session.completeDailyChallenge(selected);
+
+      backend.undoError = StateError('The undo RPC is unavailable.');
+      await expectLater(
+        session.undoDailyChallenge(selected),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('undo RPC is unavailable'),
+          ),
+        ),
+      );
+
+      expect(session.completedToday, contains(selected));
+      expect(session.growthPoints, 1);
+      expect(session.lifetimeGrowthPoints, 1);
+    },
+  );
+
+  test(
+    'undo retracts its notice and same-day re-completion creates a fresh unread notice',
+    () async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+      await session.initialize();
+      final challengeId = _challengeId('day', 0);
+
+      expect(await session.completeDailyChallenge(challengeId), isTrue);
+      expect(session.notifications, hasLength(1));
+      final originalNotificationId = session.notifications.single.id;
+      await session.markNotificationRead(originalNotificationId);
+      expect(session.unreadNotificationCount, 0);
+
+      expect(await session.undoDailyChallenge(challengeId), isTrue);
+      expect(session.notifications, isEmpty);
+      expect(session.unreadNotificationCount, 0);
+      expect(backend.notifications.single.isRetracted, isTrue);
+      expect(backend.notifications.single.isRead, isTrue);
+
+      expect(await session.completeDailyChallenge(challengeId), isTrue);
+      expect(session.notifications, hasLength(1));
+      expect(session.notifications.single.id, isNot(originalNotificationId));
+      expect(session.notifications.single.isRead, isFalse);
+      expect(session.unreadNotificationCount, 1);
+      expect(backend.notifications, hasLength(2));
+    },
+  );
+
+  testWidgets(
+    'self-kindness, happy-thought, and favorite-song art are distinct',
+    (tester) async {
+      final challenges = [
+        const DailyChallenge(
+          id: 'be-kind-to-yourself',
+          title: 'Be Kind to Yourself',
+          description: 'Offer yourself a little kindness.',
+          emoji: '',
+        ),
+        const DailyChallenge(
+          id: 'write-happy-thought',
+          title: 'Write a Happy Thought',
+          description: 'Write down something cheerful.',
+          emoji: '',
+        ),
+        const DailyChallenge(
+          id: 'enjoy-favorite-song',
+          title: 'Enjoy Your Favorite Song',
+          description: 'Listen to music you love.',
+          emoji: '',
+        ),
+        AppSession.challenges[2],
+        const DailyChallenge(
+          id: 'water-a',
+          title: 'Drink a glass of water',
+          description: 'Take a refreshing sip.',
+          emoji: '',
+        ),
+        const DailyChallenge(
+          id: 'water-b',
+          title: 'Drink a glass of water',
+          description: 'Enjoy a cool drink.',
+          emoji: '',
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Row(
+              children: [
+                for (final challenge in challenges)
+                  ChallengeIllustration(challenge: challenge),
+              ],
             ),
           ),
         ),
       );
 
-      expect(find.text('Today’s challenge is unavailable'), findsOneWidget);
-      expect(find.text('Drink a glass of water'), findsNothing);
-      expect(tester.takeException(), isNull);
-
-      await tester.pumpWidget(const SizedBox());
-      session.dispose();
+      final painters = tester
+          .widgetList<CustomPaint>(find.byType(CustomPaint))
+          .where((paint) => paint.painter != null)
+          .map((paint) => paint.painter!)
+          .toList();
+      expect(painters, hasLength(challenges.length));
+      for (var first = 0; first < 3; first++) {
+        for (var second = first + 1; second < 3; second++) {
+          expect(painters[first].shouldRepaint(painters[second]), isTrue);
+        }
+      }
+      expect(painters[1].shouldRepaint(painters[3]), isTrue);
+      expect(painters[4].shouldRepaint(painters[5]), isFalse);
     },
   );
+
+  testWidgets('Home uses bundled challenges when backend daily content fails', (
+    tester,
+  ) async {
+    final loadFailure = StateError('daily content is unavailable');
+    final backend = _FakeSupabaseDataService([])
+      ..dailyContentError = loadFailure;
+    final session = AppSession(LocalDataService(), backend: backend);
+    await tester.runAsync(session.initialize);
+
+    expect(session.loadError, same(loadFailure));
+    expect(session.dailyChallenges, hasLength(AppSession.dailyChallengeCount));
+    expect(session.dailyChallenge, isNotNull);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: HomeScreen(
+            session: session,
+            onOpenMood: () {},
+            onOpenMemories: () {},
+            onOpenChallenges: () {},
+            onOpenGarden: () {},
+            displayName: 'Sunshine',
+            avatarId: 'girl',
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Today’s challenge is unavailable'), findsNothing);
+    expect(find.text(session.dailyChallenge!.title), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
 
   test(
     'confirmed backend completion updates task and garden progress',
@@ -130,7 +742,7 @@ void main() {
       expect(session.unlockedFlowerCount, 2);
       expect(await session.undoDailyChallenge(challengeId), isTrue);
 
-      expect(session.activeFlowerId, 'flower-01');
+      expect(session.activeFlowerId, 'flower-02');
       expect(session.growthPoints, 9);
       expect(session.lifetimeGrowthPoints, 9);
       expect(session.unlockedFlowerCount, 1);
@@ -715,7 +1327,7 @@ void main() {
         clock: () => DateTime(2026, 10, 27, 12),
         backend: backend,
       );
-      await session.initialize();
+      await tester.runAsync(session.initialize);
 
       final firstChallenge = _challengeId('day', 0);
       final secondChallenge = _challengeId('day', 1);
@@ -787,7 +1399,7 @@ void main() {
       clock: () => DateTime(2026, 10, 27, 12),
       backend: backend,
     );
-    await session.initialize();
+    await tester.runAsync(session.initialize);
     final challengeId = _challengeId('day', 0);
     expect(await session.completeDailyChallenge(challengeId), isTrue);
 
@@ -835,7 +1447,7 @@ void main() {
       clock: () => DateTime(2026, 10, 27, 12),
       backend: backend,
     );
-    await session.initialize();
+    await tester.runAsync(session.initialize);
     final challengeId = _challengeId('day', 0);
     await session.completeDailyChallenge(challengeId);
 
@@ -855,6 +1467,8 @@ void main() {
       240,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.text('Undo'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Undo'));
     await tester.pumpAndSettle();
 
@@ -866,6 +1480,40 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     session.dispose();
   });
+
+  testWidgets(
+    'challenge cards use PetalPop illustrations and dark theme styles',
+    (tester) async {
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        LocalDataService(),
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      await tester.runAsync(session.initialize);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: PetalPopTheme.dark,
+          home: Scaffold(
+            body: AnimatedBuilder(
+              animation: session,
+              builder: (context, _) => DailyChallengesScreen(session: session),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byType(ChallengeIllustration), findsAtLeastNWidgets(2));
+      expect(find.byTooltip('Refresh daily challenges'), findsNothing);
+      expect(find.text('Still to do'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+    },
+  );
 
   testWidgets('challenge card shows loading until backend confirms', (
     tester,
@@ -879,7 +1527,7 @@ void main() {
       clock: () => DateTime(2026, 10, 27, 12),
       backend: backend,
     );
-    await session.initialize();
+    await tester.runAsync(session.initialize);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -921,7 +1569,7 @@ void main() {
       clock: () => DateTime(2026, 10, 27, 12),
       backend: backend,
     );
-    await session.initialize();
+    await tester.runAsync(session.initialize);
     final challengeId = _challengeId('day', 0);
     backend.recordExistingCompletion('2026-10-27', challengeId);
 
@@ -1054,14 +1702,19 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   final List<DailyContent> _dailyContentResults;
   final List<(String, String)> completedChallenges = [];
   final List<(String, String)> undoneChallenges = [];
+  final List<AppNotification> notifications = [];
+  final Set<String> omitGardenCompletionDates = {};
+  Map<String, List<String>>? gardenCompletionOverride;
   Completer<void>? completionGate;
   Object? dailyContentError;
   Object? completionError;
+  Object? undoError;
   Object? dailyCompletionQueryError;
   Object? gardenProgressError;
   Completer<void>? nextProgressGate;
   DailyContent? dailyContentOverride;
   var _dailyContentIndex = 0;
+  var _notificationSequence = 0;
   GardenProgressData _progress = GardenProgressData(
     flowerCatalog: AppSession.flowers,
     flowerUnlockDates: {'flower-01': null},
@@ -1157,11 +1810,24 @@ class _FakeSupabaseDataService extends SupabaseDataService {
       growthPoints: growthPoints,
       lifetimeGrowthPoints: newLifetimeGrowthPoints,
     );
+    _notificationSequence++;
+    notifications.add(
+      AppNotification(
+        id: 'notice-$_notificationSequence',
+        kind: 'challenge_completed',
+        sourceKey: 'challenge:$localDate:$challengeId:$_notificationSequence',
+        title: 'Challenge completed',
+        body: 'A completed challenge event.',
+        createdAt: DateTime(2026, 10, 27),
+        isRead: false,
+      ),
+    );
     return true;
   }
 
   @override
   Future<bool> undoChallenge(String localDate, String challengeId) async {
+    if (undoError != null) throw undoError!;
     if (!(_progress.dailyCompletions[localDate]?.contains(challengeId) ??
         false)) {
       return false;
@@ -1173,25 +1839,39 @@ class _FakeSupabaseDataService extends SupabaseDataService {
     };
     completions[localDate]!.remove(challengeId);
     if (completions[localDate]!.isEmpty) completions.remove(localDate);
+    final notificationPrefix = 'challenge:$localDate:$challengeId:';
+    for (var index = 0; index < notifications.length; index++) {
+      final notification = notifications[index];
+      if (!notification.isRetracted &&
+          notification.sourceKey.startsWith(notificationPrefix)) {
+        notifications[index] = notification.retract();
+      }
+    }
     final lifetime = _progress.lifetimeGrowthPoints - 1;
-    final activeIndex = lifetime ~/ AppSession.growthStagesPerFlower;
-    final unlockedCount = (activeIndex + 1).clamp(
-      0,
-      _progress.flowerCatalog.length,
-    );
-    final unlocks = {
-      for (var index = 0; index < unlockedCount; index++)
-        _progress.flowerCatalog[index].id:
-            _progress.flowerUnlockDates[_progress.flowerCatalog[index].id],
-    };
+    final unlocks = Map<String, String?>.of(_progress.flowerUnlockDates);
+    if (_progress.lifetimeGrowthPoints % AppSession.growthStagesPerFlower ==
+        0) {
+      final completionUnlock = _progress.flowerCatalog
+          .where(
+            (flower) =>
+                unlocks.containsKey(flower.id) &&
+                unlocks[flower.id] == localDate,
+          )
+          .lastOrNull;
+      if (completionUnlock != null) unlocks.remove(completionUnlock.id);
+    }
+    final activeFlowerId = _progress.flowerCatalog
+        .where((flower) => !unlocks.containsKey(flower.id))
+        .firstOrNull
+        ?.id;
     _progress = GardenProgressData(
       dailyCompletions: completions,
       flowerUnlockDates: unlocks,
       flowerCatalog: _progress.flowerCatalog,
-      activeFlowerId: activeIndex < _progress.flowerCatalog.length
-          ? _progress.flowerCatalog[activeIndex].id
-          : null,
-      growthPoints: lifetime % AppSession.growthStagesPerFlower,
+      activeFlowerId: activeFlowerId,
+      growthPoints: activeFlowerId == null
+          ? 0
+          : lifetime % AppSession.growthStagesPerFlower,
       lifetimeGrowthPoints: lifetime,
     );
     return true;
@@ -1216,11 +1896,48 @@ class _FakeSupabaseDataService extends SupabaseDataService {
       nextProgressGate = null;
       await gate.future;
     }
+    if (omitGardenCompletionDates.isNotEmpty) {
+      return GardenProgressData(
+        dailyCompletions: {
+          for (final entry in snapshot.dailyCompletions.entries)
+            if (!omitGardenCompletionDates.contains(entry.key))
+              entry.key: entry.value,
+        },
+        flowerUnlockDates: snapshot.flowerUnlockDates,
+        flowerCatalog: snapshot.flowerCatalog,
+        activeFlowerId: snapshot.activeFlowerId,
+        growthPoints: snapshot.growthPoints,
+        lifetimeGrowthPoints: snapshot.lifetimeGrowthPoints,
+      );
+    }
+    final completionOverride = gardenCompletionOverride;
+    if (completionOverride != null) {
+      return GardenProgressData(
+        dailyCompletions: completionOverride,
+        flowerUnlockDates: snapshot.flowerUnlockDates,
+        flowerCatalog: snapshot.flowerCatalog,
+        activeFlowerId: snapshot.activeFlowerId,
+        growthPoints: snapshot.growthPoints,
+        lifetimeGrowthPoints: snapshot.lifetimeGrowthPoints,
+      );
+    }
     return snapshot;
   }
 
   @override
   Future<List<MoodEntry>> loadMoods() async => [];
+
+  @override
+  Future<List<AppNotification>> loadNotifications() async =>
+      List<AppNotification>.of(notifications);
+
+  @override
+  Future<void> markNotificationRead(String id) async {
+    final index = notifications.indexWhere(
+      (notification) => notification.id == id,
+    );
+    if (index >= 0) notifications[index] = notifications[index].markRead();
+  }
 
   @override
   Future<List<MemoryEntry>> loadMemories() async => [];

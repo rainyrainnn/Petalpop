@@ -2,17 +2,30 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:flutter/material.dart' show Color;
 
+import '../models/daily_challenge.dart';
+import '../models/garden_flower.dart';
 import '../models/memory_entry.dart';
 import '../models/mood_entry.dart';
 import '../models/garden_progress.dart';
+import 'supabase_data_service.dart';
 
 class LocalDataService {
-  LocalDataService({this._preferences});
+  LocalDataService({
+    this._preferences,
+    this._databaseFactory,
+    this._databasePath,
+  });
 
   SharedPreferencesAsync? _preferences;
+  final DatabaseFactory? _databaseFactory;
+  final String? _databasePath;
+  Database? _dailyContentDatabase;
   Future<Directory>? _mediaDirectory;
 
   SharedPreferencesAsync get preferences =>
@@ -32,6 +45,89 @@ class LocalDataService {
     await preferences.setString('profile.name', name);
     await preferences.setString('profile.avatar', avatar);
     await preferences.setString('profile.theme', theme);
+  }
+
+  Future<DailyContent?> loadDailyContentCache() async {
+    final database = await _getDailyContentDatabase();
+    final rows = await database.query(
+      'daily_content_cache',
+      columns: ['content_json'],
+      orderBy: 'local_date DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final data = rows.single['content_json'] as String;
+    final decoded = jsonDecode(data);
+    if (decoded is! Map<String, dynamic> ||
+        decoded['date'] is! String ||
+        decoded['quote'] is! String ||
+        decoded['challenges'] is! List) {
+      throw const FormatException('Cached daily content is invalid.');
+    }
+    return DailyContent(
+      date: decoded['date'] as String,
+      quote: decoded['quote'] as String,
+      challenges: (decoded['challenges'] as List)
+          .map((challenge) {
+            if (challenge is! Map<String, dynamic> ||
+                challenge['id'] is! String ||
+                challenge['title'] is! String ||
+                challenge['description'] is! String ||
+                challenge['emoji'] is! String) {
+              throw const FormatException('Cached daily challenge is invalid.');
+            }
+            return DailyChallenge(
+              id: challenge['id'] as String,
+              title: challenge['title'] as String,
+              description: challenge['description'] as String,
+              emoji: challenge['emoji'] as String,
+            );
+          })
+          .toList(growable: false),
+    );
+  }
+
+  Future<void> saveDailyContentCache(DailyContent content) async {
+    final database = await _getDailyContentDatabase();
+    await database.insert('daily_content_cache', {
+      'local_date': content.date,
+      'content_json': jsonEncode({
+        'date': content.date,
+        'quote': content.quote,
+        'challenges': [
+          for (final challenge in content.challenges)
+            {
+              'id': challenge.id,
+              'title': challenge.title,
+              'description': challenge.description,
+              'emoji': challenge.emoji,
+            },
+        ],
+      }),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Database> _getDailyContentDatabase() async {
+    final existing = _dailyContentDatabase;
+    if (existing != null) return existing;
+    final factory = _databaseFactory ?? databaseFactory;
+    final databasePath =
+        _databasePath ??
+        path.join(await factory.getDatabasesPath(), 'petalpop_offline.db');
+    final database = await factory.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, _) async {
+          await db.execute(
+            'CREATE TABLE daily_content_cache ('
+            'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
+          );
+        },
+      ),
+    );
+    _dailyContentDatabase = database;
+    return database;
   }
 
   Future<List<String>> loadCompletedChallenges() async =>
@@ -76,6 +172,30 @@ class LocalDataService {
       final activeFlowerId = decoded['activeFlowerId'];
       final growthPoints = decoded['growthPoints'];
       final lifetimeGrowthPoints = decoded['lifetimeGrowthPoints'];
+      final rawCatalog = decoded['flowerCatalog'];
+      final flowerCatalog = rawCatalog is List
+          ? rawCatalog
+                .map((flower) {
+                  if (flower is! Map<String, dynamic> ||
+                      flower['id'] is! String ||
+                      flower['name'] is! String ||
+                      flower['emoji'] is! String ||
+                      flower['color'] is! int ||
+                      flower['sortOrder'] is! int) {
+                    throw const FormatException(
+                      'Cached flower catalog is invalid.',
+                    );
+                  }
+                  return GardenFlower(
+                    id: flower['id'] as String,
+                    name: flower['name'] as String,
+                    emoji: flower['emoji'] as String,
+                    color: Color(flower['color'] as int),
+                    sortOrder: flower['sortOrder'] as int,
+                  );
+                })
+                .toList(growable: false)
+          : const <GardenFlower>[];
       return GardenProgressData(
         dailyCompletions: {
           ...dailyCompletions,
@@ -87,6 +207,7 @@ class LocalDataService {
         lifetimeGrowthPoints: lifetimeGrowthPoints is int
             ? lifetimeGrowthPoints
             : 0,
+        flowerCatalog: flowerCatalog,
       );
     } on FormatException {
       return const GardenProgressData();
@@ -101,6 +222,16 @@ class LocalDataService {
         jsonEncode({
           'completions': progress.dailyCompletions,
           'flowers': progress.flowerUnlockDates,
+          'flowerCatalog': [
+            for (final flower in progress.flowerCatalog)
+              {
+                'id': flower.id,
+                'name': flower.name,
+                'emoji': flower.emoji,
+                'color': flower.color.toARGB32(),
+                'sortOrder': flower.sortOrder,
+              },
+          ],
           'activeFlowerId': progress.activeFlowerId,
           'growthPoints': progress.growthPoints,
           'lifetimeGrowthPoints': progress.lifetimeGrowthPoints,

@@ -15,6 +15,7 @@ import 'package:petalpop/screens/profile_screen.dart';
 import 'package:petalpop/screens/settings_screen.dart';
 import 'package:petalpop/services/app_session.dart';
 import 'package:petalpop/services/local_data_service.dart';
+import 'package:petalpop/theme/app_theme.dart';
 import 'package:petalpop/widgets/flower_illustration.dart';
 import 'package:petalpop/widgets/mood_face_illustration.dart';
 import 'package:petalpop/widgets/app_widgets.dart';
@@ -156,6 +157,18 @@ void main() {
       ),
       ['Home', 'Challenges', 'Garden', 'Profile'],
     );
+    await tester.tap(find.byTooltip('Notifications'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Notifications'), findsOneWidget);
+    expect(find.text('All quiet in the garden'), findsOneWidget);
+    expect(
+      tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+      0,
+    );
+    await tester.tap(find.byTooltip('Back to Home'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text("Today's Challenge"), findsOneWidget);
+
     await tester.scrollUntilVisible(
       find.text('My Mood'),
       240,
@@ -163,7 +176,17 @@ void main() {
     );
     expect(find.text('My Mood'), findsOneWidget);
     expect(find.text("Today's Challenge"), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('“Bloom your day, one petal at a time.”'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('“Bloom your day, one petal at a time.”'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('0 of 10 completed today'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('0 of 10 completed today'), findsOneWidget);
 
     await tester.scrollUntilVisible(
@@ -173,6 +196,9 @@ void main() {
     );
     expect(find.text('My Garden'), findsOneWidget);
     expect(find.text('View Garden'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('home-view-garden')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('My happy garden'), findsOneWidget);
 
     for (final (tab, heading) in [
       ('Challenges', 'Today’s happy challenges'),
@@ -191,34 +217,40 @@ void main() {
 
     await tester.tap(find.text('Home').last);
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.ensureVisible(find.text('My Mood'));
-    await tester.tap(find.text('My Mood'));
+    await tester.ensureVisible(find.byKey(const ValueKey('home-mood-card')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-mood-card')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('How are you feeling today?'), findsOneWidget);
 
     await tester.tap(find.text('Home').last);
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.ensureVisible(find.text('Memories'));
-    await tester.tap(find.text('Memories').last);
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('home-memories-card')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-memories-card')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Little memory journal'), findsOneWidget);
   });
 
-  testWidgets('Home View Garden button selects the Garden tab', (
+  testWidgets('Home shortcut cards activate their direct navigation actions', (
     WidgetTester tester,
   ) async {
     final session = AppSession(_storage);
     await session.initialize();
-    int? destination;
+    var challengeOpens = 0;
+    var moodOpens = 0;
+    var memoryOpens = 0;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: HomeScreen(
             session: session,
-            onOpenMood: () {},
-            onOpenMemories: () {},
-            onOpenChallenges: () {},
-            onOpenGarden: () => destination = 2,
+            onOpenMood: () => moodOpens++,
+            onOpenMemories: () => memoryOpens++,
+            onOpenChallenges: () => challengeOpens++,
+            onOpenGarden: () {},
             displayName: 'Daisy',
             avatarId: 'daisy',
           ),
@@ -231,19 +263,39 @@ void main() {
       tester.getSize(find.byKey(const ValueKey('home-memories-card'))),
     );
 
-    for (
-      var attempt = 0;
-      attempt < 5 && find.text('View Garden').evaluate().isEmpty;
-      attempt++
-    ) {
-      await tester.drag(find.byType(ListView).first, const Offset(0, -350));
-      await tester.pumpAndSettle();
-    }
-    expect(find.text('View Garden'), findsOneWidget);
-    await tester.ensureVisible(find.text('View Garden'));
+    final challengeCard = find.byKey(
+      const ValueKey('home-today-challenge-card'),
+    );
+    await tester.ensureVisible(challengeCard);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('View Garden'));
-    expect(destination, 2);
+    await tester.tap(challengeCard);
+    await tester.tap(
+      find.descendant(
+        of: challengeCard,
+        matching: find.byIcon(Icons.chevron_right_rounded),
+      ),
+    );
+    expect(challengeOpens, 2);
+
+    final moodCard = find.byKey(const ValueKey('home-mood-card'));
+    await tester.ensureVisible(moodCard);
+    await tester.pumpAndSettle();
+    final moodSize = tester.getSize(moodCard);
+    await tester.tapAt(
+      tester.getTopLeft(moodCard) + Offset(moodSize.width - 12, 60),
+    );
+    expect(moodOpens, 1);
+
+    final memoryCard = find.byKey(const ValueKey('home-memories-card'));
+    await tester.ensureVisible(memoryCard);
+    await tester.pumpAndSettle();
+    final memorySize = tester.getSize(memoryCard);
+    await tester.tapAt(
+      tester.getTopLeft(memoryCard) + Offset(memorySize.width - 12, 60),
+    );
+    expect(memoryOpens, 1);
+    expect(find.text('View Garden'), findsOneWidget);
+    expect(tester.takeException(), isNull);
     session.dispose();
   });
 
@@ -312,6 +364,33 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Sunny daisy'), findsWidgets);
     expect(find.text('2/10 petals'), findsOneWidget);
+  });
+
+  testWidgets('Help and Support shows a tappable support email', (
+    WidgetTester tester,
+  ) async {
+    await _openHome(tester);
+    await tester.tap(find.text('Profile').last);
+    await tester.pumpAndSettle();
+    final profileScrollable = find.descendant(
+      of: find.byType(ProfileScreen),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(
+      find.text('Help & Support'),
+      240,
+      scrollable: profileScrollable.first,
+    );
+    await tester.ensureVisible(find.text('Help & Support'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Help & Support'));
+    await tester.pumpAndSettle();
+
+    final email = find.text('reynaannjoybausin@gmail.com');
+    expect(email, findsOneWidget);
+    final link = find.ancestor(of: email, matching: find.byType(InkWell));
+    expect(link, findsOneWidget);
+    expect(tester.widget<InkWell>(link).onTap, isNotNull);
   });
 
   testWidgets('Home greeting uses the saved name and updates on resume', (
@@ -433,11 +512,12 @@ void main() {
   ) async {
     await _openHome(tester);
     await tester.scrollUntilVisible(
-      find.text('My Mood'),
+      find.byKey(const ValueKey('home-mood-card')),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('My Mood').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-mood-card')));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(MoodFaceIllustration), findsNWidgets(9));
@@ -517,11 +597,12 @@ void main() {
   ) async {
     await _openHome(tester);
     await tester.scrollUntilVisible(
-      find.text('Memories'),
+      find.byKey(const ValueKey('home-memories-card')),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Memories').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-memories-card')));
     await tester.pump(const Duration(milliseconds: 300));
 
     await tester.tap(find.text('Notes'));
@@ -554,11 +635,12 @@ void main() {
     _storage.memorySaveGate = saveGate;
     await _openHome(tester);
     await tester.scrollUntilVisible(
-      find.text('Memories'),
+      find.byKey(const ValueKey('home-memories-card')),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Memories').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-memories-card')));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Notes'));
     await tester.pumpAndSettle();
@@ -641,9 +723,7 @@ void main() {
     await tester.tap(find.text('About PetalPop'));
     await tester.pump();
     expect(
-      find.textContaining(
-        'Authentication and notifications are not connected.',
-      ),
+      find.textContaining('push notifications are not configured.'),
       findsOneWidget,
     );
   });
@@ -725,7 +805,7 @@ void main() {
   testWidgets(
     'profile lets users choose an avatar and keeps it after relaunch',
     (WidgetTester tester) async {
-      tester.view.physicalSize = const Size(400, 900);
+      tester.view.physicalSize = const Size(320, 568);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -744,7 +824,11 @@ void main() {
       );
       await tester.pump();
       expect(find.text('Choose your avatar'), findsOneWidget);
-      expect(find.byType(ProfileAvatar), findsNWidgets(9));
+      expect(find.byType(ProfileAvatar), findsNWidgets(13));
+      for (final avatar in PetalAvatarChoice.choices) {
+        expect(find.text(avatar.label), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
       await tester.tap(find.text('Bunny'));
       await tester.pump();
       expect(_storage.profile['avatar'], isNot('bunny'));
@@ -799,11 +883,12 @@ void main() {
   ) async {
     await _openHome(tester);
     await tester.scrollUntilVisible(
-      find.text('Memories'),
+      find.byKey(const ValueKey('home-memories-card')),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Memories').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('home-memories-card')));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Little memory journal'), findsOneWidget);
@@ -927,6 +1012,34 @@ void main() {
     expect(find.byKey(const ValueKey('voice')), findsOneWidget);
     expect(find.text('A lovely day'), findsNothing);
     expect(find.text('Sunny afternoon'), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: PetalPopTheme.dark,
+        home: Scaffold(body: MemoryJournalScreen(session: session)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Notes'));
+    await tester.pumpAndSettle();
+    final noteCard = tester.widget<Container>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('note')),
+            matching: find.byType(Container),
+          )
+          .first,
+    );
+    expect(
+      (noteCard.decoration! as BoxDecoration).color,
+      PetalPopTheme.dark.colorScheme.surface,
+    );
+    final noteTitle = tester.widget<Text>(find.text('A lovely day'));
+    expect(
+      noteTitle.style?.color,
+      PetalPopTheme.dark.textTheme.labelLarge?.color,
+    );
+    expect(tester.takeException(), isNull);
     session.dispose();
   });
 

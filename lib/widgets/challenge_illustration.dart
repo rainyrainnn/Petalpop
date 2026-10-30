@@ -47,8 +47,28 @@ class ChallengeIllustration extends StatelessWidget {
   }
 
   static _ChallengeKind _challengeKind(DailyChallenge challenge) {
-    final text = '${challenge.id} ${challenge.title} ${challenge.description}'
-        .toLowerCase();
+    final id = challenge.id.toLowerCase().replaceAll('_', '-');
+    final title = challenge.title.toLowerCase();
+    final text = '$id $title ${challenge.description}'.toLowerCase();
+    if (id.contains('kind-yourself') ||
+        id.contains('self-kind') ||
+        id.contains('self-love') ||
+        title.contains('kind to yourself') ||
+        title.contains('self-kindness') ||
+        title.contains('self-love')) {
+      return _ChallengeKind.selfKindness;
+    }
+    if (id.contains('happy-thought') ||
+        title.contains('happy thought') ||
+        title.contains('happy thoughts')) {
+      return _ChallengeKind.happyThought;
+    }
+    if (id.contains('favorite-song') ||
+        id.contains('favourite-song') ||
+        title.contains('favorite song') ||
+        title.contains('favourite song')) {
+      return _ChallengeKind.favoriteSong;
+    }
     if (text.contains('water') || text.contains('drink')) {
       return _ChallengeKind.water;
     }
@@ -114,11 +134,14 @@ enum _ChallengeKind {
   water,
   camera,
   journal,
+  happyThought,
   music,
+  favoriteSong,
   movement,
   rest,
   fruit,
   kindness,
+  selfKindness,
   nature,
   bloom,
 }
@@ -151,8 +174,12 @@ class _ChallengeIllustrationPainter extends CustomPainter {
         _drawCamera(canvas);
       case _ChallengeKind.journal:
         _drawJournal(canvas);
+      case _ChallengeKind.happyThought:
+        _drawHappyThought(canvas);
       case _ChallengeKind.music:
         _drawMusic(canvas);
+      case _ChallengeKind.favoriteSong:
+        _drawFavoriteSong(canvas);
       case _ChallengeKind.movement:
         _drawMovement(canvas);
       case _ChallengeKind.rest:
@@ -161,6 +188,8 @@ class _ChallengeIllustrationPainter extends CustomPainter {
         _drawFruit(canvas);
       case _ChallengeKind.kindness:
         _drawKindness(canvas);
+      case _ChallengeKind.selfKindness:
+        _drawSelfKindness(canvas);
       case _ChallengeKind.nature:
         _drawNature(canvas);
       case _ChallengeKind.bloom:
@@ -281,6 +310,83 @@ class _ChallengeIllustrationPainter extends CustomPainter {
     _drawFlower(canvas, const Offset(74, 26), 5, _yellow);
   }
 
+  void _drawHappyThought(Canvas canvas) {
+    canvas.save();
+    canvas.translate(47, 49);
+    canvas.rotate(-.1);
+    final cover = RRect.fromRectAndRadius(
+      const Rect.fromLTWH(-26, -32, 52, 65),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(cover, Paint()..color = const Color(0xFFEE91B5));
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(-20, -26, 40, 53),
+        const Radius.circular(4),
+      ),
+      Paint()..color = _cream,
+    );
+    canvas.drawLine(
+      const Offset(-15, -20),
+      const Offset(-15, 20),
+      Paint()
+        ..color = const Color(0xFFDDA6C2)
+        ..strokeWidth = 2,
+    );
+    for (var y = -17.0; y <= 13; y += 9) {
+      canvas.drawLine(
+        Offset(-10, y),
+        Offset(14, y),
+        Paint()
+          ..color = const Color(0xFFD6C5D2)
+          ..strokeWidth = 1.5,
+      );
+    }
+    canvas.drawCircle(const Offset(2, 5), 10, Paint()..color = _yellow);
+    canvas.drawCircle(const Offset(-1, 3), 1.3, Paint()..color = _ink);
+    canvas.drawCircle(const Offset(5, 3), 1.3, Paint()..color = _ink);
+    canvas.drawArc(
+      const Rect.fromLTWH(-2, 4, 8, 6),
+      0,
+      math.pi,
+      false,
+      Paint()
+        ..color = _ink
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.3,
+    );
+    canvas.restore();
+
+    canvas.save();
+    canvas.translate(69, 61);
+    canvas.rotate(.72);
+    final pencil = Path()
+      ..moveTo(-4, 13)
+      ..lineTo(-4, -11)
+      ..quadraticBezierTo(0, -17, 4, -11)
+      ..lineTo(4, 13)
+      ..lineTo(0, 20)
+      ..close();
+    canvas.drawPath(pencil, Paint()..color = _purple);
+    canvas.drawPath(
+      pencil,
+      Paint()
+        ..color = const Color(0xFF8872B5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+    canvas.drawLine(
+      const Offset(-3, 8),
+      const Offset(3, 8),
+      Paint()
+        ..color = _yellow
+        ..strokeWidth = 2,
+    );
+    canvas.restore();
+    _drawSparkle(canvas, const Offset(27, 24), 4);
+    _drawFlower(canvas, const Offset(77, 29), 4.5, _pink);
+  }
+
   void _drawMusic(Canvas canvas) {
     canvas.drawArc(
       const Rect.fromLTWH(25, 20, 50, 53),
@@ -310,6 +416,55 @@ class _ChallengeIllustrationPainter extends CustomPainter {
     _drawMusicNote(canvas, const Offset(48, 42), _yellow);
     _drawMusicNote(canvas, const Offset(58, 60), _blue);
     canvas.drawCircle(const Offset(47, 74), 2.5, Paint()..color = _green);
+  }
+
+  void _drawFavoriteSong(Canvas canvas) {
+    canvas.drawArc(
+      const Rect.fromLTWH(22, 18, 56, 57),
+      math.pi,
+      math.pi,
+      false,
+      Paint()
+        ..color = const Color(0xFFE86F9E)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 11
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawArc(
+      const Rect.fromLTWH(28, 23, 44, 44),
+      math.pi,
+      math.pi,
+      false,
+      Paint()
+        ..color = const Color(0xFFFFB3CD)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round,
+    );
+    for (final x in [20.0, 68.0]) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, 47, 15, 25),
+          const Radius.circular(7),
+        ),
+        Paint()..color = const Color(0xFFE86F9E),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x + 3, 51, 9, 15),
+          const Radius.circular(4),
+        ),
+        Paint()..color = const Color(0xFFFFD8E6),
+      );
+    }
+    _drawMusicNote(canvas, const Offset(39, 68), _purple);
+    _drawMusicNote(canvas, const Offset(61, 38), _yellow);
+    _drawSparkle(canvas, const Offset(79, 24), 5);
+    canvas.drawCircle(
+      const Offset(40, 48),
+      2,
+      Paint()..color = Colors.white.withValues(alpha: .85),
+    );
   }
 
   void _drawMusicNote(Canvas canvas, Offset center, Color color) {
@@ -449,6 +604,60 @@ class _ChallengeIllustrationPainter extends CustomPainter {
     );
     _drawFlower(canvas, const Offset(73, 25), 5, _yellow);
     _drawSparkle(canvas, const Offset(24, 72), 4);
+  }
+
+  void _drawSelfKindness(Canvas canvas) {
+    final heart = Path()
+      ..moveTo(50, 79)
+      ..cubicTo(44, 71, 23, 56, 23, 42)
+      ..cubicTo(23, 27, 42, 23, 50, 38)
+      ..cubicTo(58, 23, 77, 27, 77, 42)
+      ..cubicTo(77, 56, 56, 71, 50, 79)
+      ..close();
+    canvas.drawShadow(heart, const Color(0xFFB94C79), 5, true);
+    canvas.drawPath(
+      heart,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFFB4CF), Color(0xFFEC6D9A)],
+        ).createShader(const Rect.fromLTWH(20, 22, 60, 60)),
+    );
+    canvas.drawPath(
+      heart,
+      Paint()
+        ..color = const Color(0xFFD85D89)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+    canvas.drawOval(
+      const Rect.fromLTWH(32, 35, 7, 13),
+      Paint()..color = Colors.white.withValues(alpha: .62),
+    );
+    canvas.drawCircle(const Offset(42, 45), 2, Paint()..color = _ink);
+    canvas.drawCircle(const Offset(58, 45), 2, Paint()..color = _ink);
+    canvas.drawOval(
+      const Rect.fromLTWH(33, 50, 8, 4),
+      Paint()..color = const Color(0xFFDA628D).withValues(alpha: .65),
+    );
+    canvas.drawOval(
+      const Rect.fromLTWH(59, 50, 8, 4),
+      Paint()..color = const Color(0xFFDA628D).withValues(alpha: .65),
+    );
+    canvas.drawArc(
+      const Rect.fromLTWH(44, 48, 12, 9),
+      0,
+      math.pi,
+      false,
+      Paint()
+        ..color = _ink
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+    _drawSparkle(canvas, const Offset(22, 30), 5);
+    _drawSparkle(canvas, const Offset(79, 62), 4);
+    _drawFlower(canvas, const Offset(77, 25), 4, _yellow);
   }
 
   void _drawNature(Canvas canvas) {

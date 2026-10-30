@@ -112,7 +112,9 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
                   child: PetalCard(
-                    color: const Color(0xFFFFF5F8),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 9,
@@ -137,16 +139,18 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
                   child: PetalCard(
-                    color: const Color(0xFFFFE8F0),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 8,
                     ),
                     child: Row(
                       children: [
-                        const Icon(
+                        Icon(
                           Icons.fiber_manual_record,
-                          color: PetalPopColors.hotPink,
+                          color: Theme.of(context).colorScheme.primary,
                           size: 15,
                         ),
                         const SizedBox(width: 8),
@@ -181,7 +185,7 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
                 heroTag: 'add-memory',
                 onPressed: _isSavingMemory ? null : _showAddMemoryOptions,
                 backgroundColor: PetalPopColors.hotPink,
-                foregroundColor: Colors.white,
+                foregroundColor: Theme.of(context).colorScheme.onPrimary,
                 elevation: 5,
                 tooltip: 'Add a memory',
                 child: const Icon(Icons.add_rounded, size: 30),
@@ -561,14 +565,18 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
   }
 
   void _showMessage(String message) {
+    final scheme = Theme.of(context).colorScheme;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(message),
+          content: Text(
+            message,
+            style: TextStyle(color: scheme.onInverseSurface),
+          ),
           duration: const Duration(milliseconds: 1700),
           behavior: SnackBarBehavior.floating,
-          backgroundColor: PetalPopColors.deepPink,
+          backgroundColor: scheme.inverseSurface,
         ),
       );
   }
@@ -596,30 +604,33 @@ class _MemoryFilterPill extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: selected ? PetalPopColors.hotPink : const Color(0xFFFFF5F8),
-    borderRadius: BorderRadius.circular(24),
-    child: InkWell(
-      onTap: onTap,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? scheme.primary : scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(24),
-      child: Semantics(
-        button: true,
-        selected: selected,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? Colors.white : PetalPopColors.deepPink,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: Semantics(
+          button: true,
+          selected: selected,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 9),
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: selected ? scheme.onPrimary : scheme.onSurface,
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _PhotoCaptionDialog extends StatefulWidget {
@@ -781,7 +792,7 @@ class _MemoryGridCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(17),
         boxShadow: [
           BoxShadow(
@@ -823,7 +834,7 @@ class _MemoryGridCard extends StatelessWidget {
                 icon: Icon(
                   isFavorite ? Icons.favorite_rounded : Icons.favorite_border,
                   size: 19,
-                  color: PetalPopColors.hotPink,
+                  color: theme.colorScheme.primary,
                 ),
               ),
               PopupMenuButton<_MemoryAction>(
@@ -900,7 +911,7 @@ class _MemoryGridCard extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
-            color: const Color(0xFFFFF5F8),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(14),
           ),
           child: Column(
@@ -923,7 +934,7 @@ class _MemoryGridCard extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: const Color(0xFFFFF5F8),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(14),
           ),
           child: Column(

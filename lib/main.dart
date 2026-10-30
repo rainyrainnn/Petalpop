@@ -112,37 +112,57 @@ class _PetalPopAppState extends State<PetalPopApp> {
   }
 
   Future<void> _loadProfile() async {
+    final cloudUser = widget.client?.auth.currentUser;
+    late final Map<String, String> cachedProfile;
     try {
-      final cloudUser = widget.client?.auth.currentUser;
-      final profile = cloudUser != null && _backend != null
-          ? await _backend.loadProfile()
-          : await _storage.loadProfile();
-      if (cloudUser != null && _backend != null) {
-        final timeZone = await FlutterTimezone.getLocalTimezone();
-        await _backend.saveProfile(
-          displayName: profile['display_name'] as String,
-          avatarId: profile['avatar_id'] as String,
-          theme: profile['theme'] as String,
-          timeZone: timeZone.identifier,
-        );
-      }
-      if (!mounted) return;
-      setState(() {
-        _displayName =
-            (profile['display_name'] ?? profile['name']) as String? ??
-            _displayName;
-        _avatarId =
-            (profile['avatar_id'] ?? profile['avatar']) as String? ?? _avatarId;
-        _themeMode = (profile['theme'] as String?) == 'dark'
-            ? ThemeMode.dark
-            : ThemeMode.light;
-        if (cloudUser != null) _hasStarted = true;
-      });
+      cachedProfile = await _storage.loadProfile();
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _profileLoadError = 'Could not load saved profile preferences: $error';
-        if (widget.client?.auth.currentUser != null) _hasStarted = true;
+        if (cloudUser != null) _hasStarted = true;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _displayName = cachedProfile['name'] ?? _displayName;
+      _avatarId = cachedProfile['avatar'] ?? _avatarId;
+      _themeMode = cachedProfile['theme'] == 'dark'
+          ? ThemeMode.dark
+          : ThemeMode.light;
+      if (cloudUser != null) _hasStarted = true;
+    });
+
+    if (cloudUser == null || _backend == null) return;
+    try {
+      final profile = await _backend.loadProfile();
+      final displayName = profile['display_name'] as String;
+      final avatarId = profile['avatar_id'] as String;
+      final theme = profile['theme'] as String;
+      await _storage.saveProfile(
+        name: displayName,
+        avatar: avatarId,
+        theme: theme,
+      );
+      if (!mounted) return;
+      setState(() {
+        _displayName = displayName;
+        _avatarId = avatarId;
+        _themeMode = theme == 'dark' ? ThemeMode.dark : ThemeMode.light;
+        _profileLoadError = null;
+      });
+      final timeZone = await FlutterTimezone.getLocalTimezone();
+      await _backend.saveProfile(
+        displayName: displayName,
+        avatarId: avatarId,
+        theme: theme,
+        timeZone: timeZone.identifier,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _profileLoadError = 'Could not load saved profile preferences: $error';
       });
     }
   }
@@ -166,6 +186,11 @@ class _PetalPopAppState extends State<PetalPopApp> {
     try {
       final displayName = name ?? _displayName;
       final theme = _themeMode == ThemeMode.dark ? 'dark' : 'light';
+      await _storage.saveProfile(
+        name: displayName,
+        avatar: _avatarId,
+        theme: theme,
+      );
       if (_backend != null && widget.client?.auth.currentUser != null) {
         final timeZone = await FlutterTimezone.getLocalTimezone();
         await _backend.saveProfile(
@@ -175,11 +200,6 @@ class _PetalPopAppState extends State<PetalPopApp> {
           timeZone: timeZone.identifier,
         );
       }
-      await _storage.saveProfile(
-        name: displayName,
-        avatar: _avatarId,
-        theme: theme,
-      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -214,20 +234,26 @@ class _PetalPopAppState extends State<PetalPopApp> {
     }
 
     final profile = await backend.loadProfile();
+    final profileName = profile['display_name'] as String;
+    final profileAvatarId = profile['avatar_id'] as String;
+    final profileTheme = profile['theme'] as String;
+    await _storage.saveProfile(
+      name: profileName,
+      avatar: profileAvatarId,
+      theme: profileTheme,
+    );
     final timeZone = await FlutterTimezone.getLocalTimezone();
     await backend.saveProfile(
-      displayName: profile['display_name'] as String,
-      avatarId: profile['avatar_id'] as String,
-      theme: profile['theme'] as String,
+      displayName: profileName,
+      avatarId: profileAvatarId,
+      theme: profileTheme,
       timeZone: timeZone.identifier,
     );
     if (!mounted) return null;
     setState(() {
-      _displayName = profile['display_name'] as String? ?? 'Sunshine';
-      _avatarId = profile['avatar_id'] as String? ?? 'girl';
-      _themeMode = profile['theme'] == 'dark'
-          ? ThemeMode.dark
-          : ThemeMode.light;
+      _displayName = profileName;
+      _avatarId = profileAvatarId;
+      _themeMode = profileTheme == 'dark' ? ThemeMode.dark : ThemeMode.light;
       _authMode = null;
       _hasStarted = true;
     });

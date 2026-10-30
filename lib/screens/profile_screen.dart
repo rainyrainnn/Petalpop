@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../services/app_session.dart';
@@ -184,17 +182,20 @@ class ProfileScreen extends StatelessWidget {
 
   Future<void> _chooseAvatar(BuildContext context) async {
     var selectedId = avatarId;
-    final compactPicker = MediaQuery.sizeOf(context).height < 600;
+    final size = MediaQuery.sizeOf(context);
+    final compactPicker = size.height < 600 || size.width < 360;
+    final tileHeight = compactPicker ? 39.0 : 47.0;
     final chosenId = await showDialog<String>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
+          scrollable: true,
           title: const Text('Choose your avatar'),
           content: SizedBox(
-            width: 340,
-            height: compactPicker ? 154 : 174,
+            width: (size.width - 72).clamp(240.0, 340.0),
+            height: compactPicker ? 140 : 166,
             child: Container(
-              padding: const EdgeInsets.all(7),
+              padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(20),
@@ -210,8 +211,8 @@ class ProfileScreen extends StatelessWidget {
                 physics: const NeverScrollableScrollPhysics(),
                 crossAxisCount: 4,
                 crossAxisSpacing: 5,
-                mainAxisSpacing: 5,
-                childAspectRatio: compactPicker ? 1.2 : 1.15,
+                mainAxisSpacing: 3,
+                mainAxisExtent: tileHeight,
                 children: [
                   for (final avatar in PetalAvatarChoice.choices)
                     Builder(
@@ -224,9 +225,8 @@ class ProfileScreen extends StatelessWidget {
                           label: '${avatar.label} avatar',
                           child: InkWell(
                             borderRadius: BorderRadius.circular(15),
-                            onTap: () => setDialogState(
-                              () => selectedId = avatar.id,
-                            ),
+                            onTap: () =>
+                                setDialogState(() => selectedId = avatar.id),
                             child: Container(
                               decoration: BoxDecoration(
                                 color: isSelected
@@ -250,15 +250,17 @@ class ProfileScreen extends StatelessWidget {
                                     children: [
                                       ProfileAvatar(
                                         avatarId: avatar.id,
-                                        radius: compactPicker ? 16 : 18,
+                                        radius: compactPicker ? 10 : 13,
                                       ),
-                                      const SizedBox(height: 3),
+                                      const SizedBox(height: 1),
                                       Text(
                                         avatar.label,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: theme.textTheme.labelSmall
                                             ?.copyWith(
+                                              fontSize: 10,
+                                              height: 1,
                                               fontWeight: isSelected
                                                   ? FontWeight.w800
                                                   : FontWeight.w600,
@@ -304,22 +306,11 @@ class ProfileScreen extends StatelessWidget {
   }
 
   Future<void> _editName(BuildContext context) async {
-    final dialogClosed = Completer<void>();
     final name = await showDialog<String>(
       context: context,
-      builder: (dialogContext) {
-        final route = ModalRoute.of(dialogContext);
-        if (route == null) {
-          throw StateError('The display-name dialog route is unavailable.');
-        }
-        route.completed.then((_) {
-          if (!dialogClosed.isCompleted) dialogClosed.complete();
-        });
-        return _EditNameDialog(initialName: displayName);
-      },
+      builder: (dialogContext) => _EditNameDialog(initialName: displayName),
     );
-    await dialogClosed.future;
-    if (name != null) onDisplayNameChanged(name);
+    if (name != null && name.isNotEmpty) onDisplayNameChanged(name);
   }
 }
 

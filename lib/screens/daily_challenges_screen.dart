@@ -289,9 +289,7 @@ class _ChallengeCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      completed
-                          ? '1 growth point earned'
-                          : '+1 growth point',
+                      completed ? '1 growth point earned' : '+1 growth point',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: Theme.of(context).colorScheme.primary,
                         fontWeight: FontWeight.w700,
