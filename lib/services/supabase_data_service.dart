@@ -389,65 +389,65 @@ class SupabaseDataService {
     return memories;
   }
 
-  Future<MemoryEntry> addMemory(MemoryEntry entry) async {
-    final id = _uuidV4();
-    final extension = entry.filePath == null
-        ? (entry.type == MemoryType.photo ? 'jpg' : 'm4a')
-        : entry.filePath!.split('.').last.toLowerCase();
-    final path = entry.filePath == null ? null : '$userId/$id/$id.$extension';
-    if (path != null) {
-      final contentType = switch (extension) {
-        'png' => 'image/png',
-        'webp' => 'image/webp',
-        'm4a' => 'audio/mp4',
-        'aac' => 'audio/aac',
-        _ => entry.type == MemoryType.photo ? 'image/jpeg' : 'audio/mp4',
-      };
-      await client.storage
-          .from(privateBucket)
-          .upload(
-            path,
-            File(entry.filePath!),
-            fileOptions: FileOptions(upsert: false, contentType: contentType),
-          );
-    }
-    try {
-      await client.from('memories').insert({
-        'id': id,
-        'user_id': userId,
-        'type': entry.type.name,
-        'title': entry.title,
-        'description': entry.description,
-        'created_at': entry.createdAt.toUtc().toIso8601String(),
-        'storage_path': path,
-        'duration_seconds': entry.type == MemoryType.voice
-            ? entry.durationSeconds
-            : null,
-      });
-    } catch (_) {
-      if (path != null) {
-        await client.storage.from(privateBucket).remove([path]);
-      }
-      rethrow;
-    }
-    final signedUrl = path == null
-        ? null
-        : await client.storage
-              .from(privateBucket)
-              .createSignedUrl(path, 15 * 60);
-    return MemoryEntry(
-      id: id,
-      type: entry.type,
-      title: entry.title,
-      description: entry.description,
-      createdAt: entry.createdAt,
-      filePath: entry.filePath,
-      storagePath: path,
-      signedUrl: signedUrl,
-      durationSeconds: entry.durationSeconds,
+Future<MemoryEntry> addMemory(MemoryEntry entry) async {
+  // Reuse the UUID created when the memory was first saved locally.
+  final id = entry.id;
+
+  final extension = entry.filePath == null
+      ? (entry.type == MemoryType.photo ? 'jpg' : 'm4a')
+      : entry.filePath!.split('.').last.toLowerCase();
+
+  final path = entry.filePath == null ? null : '$userId/$id/$id.$extension';
+
+  if (path != null) {
+    final contentType = switch (extension) {
+      'png' => 'image/png',
+      'webp' => 'image/webp',
+      'm4a' => 'audio/mp4',
+      'aac' => 'audio/aac',
+      _ => entry.type == MemoryType.photo ? 'image/jpeg' : 'audio/mp4',
+    };
+
+    await client.storage.from(privateBucket).upload(
+      path,
+      File(entry.filePath!),
+      fileOptions: FileOptions(
+        upsert: true,
+        contentType: contentType,
+      ),
     );
   }
 
+  await client.from('memories').upsert({
+    'id': id,
+    'user_id': userId,
+    'type': entry.type.name,
+    'title': entry.title,
+    'description': entry.description,
+    'created_at': entry.createdAt.toUtc().toIso8601String(),
+    'storage_path': path,
+    'duration_seconds':
+        entry.type == MemoryType.voice ? entry.durationSeconds : null,
+  }, onConflict: 'id');
+
+  final signedUrl = path == null
+      ? null
+      : await client.storage
+          .from(privateBucket)
+          .createSignedUrl(path, 15 * 60);
+
+  return MemoryEntry(
+    id: id,
+    type: entry.type,
+    title: entry.title,
+    description: entry.description,
+    createdAt: entry.createdAt,
+    filePath: entry.filePath,
+    storagePath: path,
+    signedUrl: signedUrl,
+    durationSeconds: entry.durationSeconds,
+  );
+}
   Future<void> updateMemory(MemoryEntry entry) async {
     await client
         .from('memories')
