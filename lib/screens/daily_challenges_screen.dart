@@ -116,15 +116,14 @@ class _DailyChallengesScreenState extends State<DailyChallengesScreen> {
                   'saved on this device and waiting to sync.',
                   style: theme.textTheme.bodyMedium,
                 ),
-                if (session.syncError != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    'Last sync attempt failed: ${session.syncError}',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                ],
+                const SizedBox(height: 4),
+Text(
+  'Your progress is saved on this device. '
+  'We’ll sync it when you’re back online. 🌷',
+  style: theme.textTheme.bodySmall?.copyWith(
+    color: theme.colorScheme.secondary,
+  ),
+),
               ],
             ),
           ),

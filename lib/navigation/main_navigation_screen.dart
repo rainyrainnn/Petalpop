@@ -294,13 +294,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     try {
       await _session.refreshDailyChallenges();
     } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not refresh today’s garden data: $error'),
-        ),
-      );
-    }
+  if (!mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text(
+        'You’re offline. Your saved garden data is still available. 🌷',
+      ),
+    ),
+  );
+}
   }
 
   void _setNotificationsEnabled(bool enabled) {
