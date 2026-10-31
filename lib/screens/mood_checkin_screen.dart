@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+import 'package:uuid/uuid.dart';
 import '../models/mood_entry.dart';
 import '../services/app_session.dart';
 import '../theme/app_theme.dart';
@@ -208,11 +208,12 @@ class _MoodCheckinScreenState extends State<MoodCheckinScreen> {
     try {
       await widget.session.addMoodEntry(
         MoodEntry(
-          mood: mood,
-          emoji: selection.$2,
-          note: _noteController.text.trim(),
-          createdAt: DateTime.now(),
-        ),
+  id: const Uuid().v4(),
+  mood: mood,
+  emoji: selection.$2,
+  note: _noteController.text.trim(),
+  createdAt: DateTime.now(),
+),
       );
       if (!mounted) return;
       setState(() {

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-
+import 'package:uuid/uuid.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -399,7 +399,7 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
       if (existing == null) {
         await widget.session.addMemory(
           MemoryEntry(
-            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            id: const Uuid().v4(),
             type: MemoryType.note,
             title: result.$1,
             description: result.$2,
@@ -477,7 +477,7 @@ class _MemoryJournalScreenState extends State<MemoryJournalScreen> {
       }
       final duration = _recordingDuration.inSeconds;
       final entry = MemoryEntry(
-        id: file.uri.pathSegments.last,
+       id: const Uuid().v4(),
         type: MemoryType.voice,
         title: 'Voice memory',
         description: '',

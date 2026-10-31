@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-
+import 'package:uuid/uuid.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
@@ -239,12 +239,13 @@ void main() {
         ),
       );
       await seedStorage.saveMoods([
-        MoodEntry(
-          mood: 'Calm',
-          emoji: '🌿',
-          note: 'Taking it slowly.',
-          createdAt: DateTime(2026, 10, 27, 9),
-        ),
+       MoodEntry(
+  id: const Uuid().v4(),
+  mood: 'Calm',
+  emoji: '🌿',
+  note: 'Taking it slowly.',
+  createdAt: DateTime(2026, 10, 27, 9),
+),
       ]);
       await seedStorage.saveMemories([
         MemoryEntry(

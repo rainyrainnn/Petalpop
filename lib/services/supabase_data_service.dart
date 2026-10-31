@@ -290,22 +290,24 @@ class SupabaseDataService {
   }
 
   Future<List<MoodEntry>> loadMoods() async {
-    final rows = await client
-        .from('mood_entries')
-        .select('mood, emoji, note, created_at')
-        .eq('user_id', userId)
-        .order('created_at', ascending: false);
-    return rows
-        .map(
-          (row) => MoodEntry(
-            mood: row['mood'] as String,
-            emoji: row['emoji'] as String,
-            note: row['note'] as String,
-            createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
-          ),
-        )
-        .toList();
-  }
+  final rows = await client
+      .from('mood_entries')
+      .select('id, mood, emoji, note, created_at')
+      .eq('user_id', userId)
+      .order('created_at', ascending: false);
+
+  return rows
+      .map(
+        (row) => MoodEntry(
+          id: row['id'] as String,
+          mood: row['mood'] as String,
+          emoji: row['emoji'] as String,
+          note: row['note'] as String? ?? '',
+          createdAt: DateTime.parse(row['created_at'] as String).toLocal(),
+        ),
+      )
+      .toList();
+}
 
   Future<List<AppNotification>> loadNotifications() async {
     final rows = await client
@@ -342,14 +344,18 @@ class SupabaseDataService {
   }
 
   Future<void> saveMood(MoodEntry entry) async {
-    await client.from('mood_entries').insert({
+  await client.from('mood_entries').upsert(
+    {
+      'id': entry.id,
       'user_id': userId,
       'mood': entry.mood,
       'emoji': entry.emoji,
       'note': entry.note,
       'created_at': entry.createdAt.toUtc().toIso8601String(),
-    });
-  }
+    },
+    onConflict: 'id',
+  );
+}
 
   Future<List<MemoryEntry>> loadMemories() async {
     final rows = await client

@@ -12,21 +12,30 @@ import 'services/supabase_data_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (SupabaseConfig.url.isNotEmpty !=
-      SupabaseConfig.publishableKey.isNotEmpty) {
+  if (SupabaseConfig.cleanUrl.isNotEmpty !=
+    SupabaseConfig.cleanPublishableKey.isNotEmpty) {
     throw StateError(
       'Configure both SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY, or neither.',
     );
   }
   SupabaseClient? client;
-  if (SupabaseConfig.isConfigured) {
-    await Supabase.initialize(
-      url: SupabaseConfig.url,
-      publishableKey: SupabaseConfig.publishableKey,
-    );
-    client = Supabase.instance.client;
-  }
-  runApp(PetalPopApp(client: client));
+
+if (SupabaseConfig.isConfigured) {
+  debugPrint('Supabase configured: ${SupabaseConfig.isConfigured}');
+  debugPrint('Supabase URL: ${SupabaseConfig.cleanUrl}');
+  debugPrint(
+    'Publishable key loaded: ${SupabaseConfig.cleanPublishableKey.isNotEmpty}',
+  );
+
+ await Supabase.initialize(
+  url: SupabaseConfig.cleanUrl,
+  publishableKey: SupabaseConfig.cleanPublishableKey,
+);
+
+  client = Supabase.instance.client;
+}
+
+runApp(PetalPopApp(client: client));
 }
 
 class PetalPopApp extends StatefulWidget {

@@ -1,3 +1,4 @@
+import 'package:uuid/uuid.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -7,7 +8,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:flutter/material.dart' show Color;
-
 import '../models/daily_challenge.dart';
 import '../models/garden_flower.dart';
 import '../models/memory_entry.dart';
@@ -16,6 +16,24 @@ import '../models/garden_progress.dart';
 import 'supabase_data_service.dart';
 
 enum ChallengeOperationType { complete, undo }
+
+class PendingSyncOperation {
+  const PendingSyncOperation({
+    required this.id,
+    required this.userId,
+    required this.entity,
+    required this.operation,
+    required this.payload,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String userId;
+  final String entity;
+  final String operation;
+  final Map<String, dynamic> payload;
+  final String createdAt;
+}
 
 class PendingChallengeOperation {
   const PendingChallengeOperation({
@@ -164,6 +182,64 @@ class LocalDataService {
         .toList(growable: false);
   }
 
+
+Future<void> enqueuePendingSyncOperation(
+  PendingSyncOperation operation,
+) async {
+  final db = await _getDailyContentDatabase();
+
+  await db.insert(
+    'pending_sync_operations',
+    {
+      'id': operation.id,
+      'user_id': operation.userId,
+      'entity': operation.entity,
+      'operation': operation.operation,
+      'payload_json': jsonEncode(operation.payload),
+      'created_at': operation.createdAt,
+    },
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+}
+
+
+Future<List<PendingSyncOperation>> loadPendingSyncOperations(
+  String userId,
+) async {
+  final db = await _getDailyContentDatabase();
+
+  final rows = await db.query(
+    'pending_sync_operations',
+    where: 'user_id = ?',
+    whereArgs: [userId],
+    orderBy: 'created_at ASC',
+  );
+
+  return rows.map((row) {
+    return PendingSyncOperation(
+      id: row['id'] as String,
+      userId: row['user_id'] as String,
+      entity: row['entity'] as String,
+      operation: row['operation'] as String,
+      payload: jsonDecode(row['payload_json'] as String)
+          as Map<String, dynamic>,
+      createdAt: row['created_at'] as String,
+    );
+  }).toList();
+}
+
+
+Future<void> deletePendingSyncOperation(String id) async {
+  final db = await _getDailyContentDatabase();
+
+  await db.delete(
+    'pending_sync_operations',
+    where: 'id = ?',
+    whereArgs: [id],
+  );
+}
+
+
   Future<void> removePendingChallengeOperation(int id) async {
     final database = await _getDailyContentDatabase();
     await database.delete(
@@ -173,32 +249,44 @@ class LocalDataService {
     );
   }
 
+
   Future<Database> _getDailyContentDatabase() async {
-    final existing = _dailyContentDatabase;
-    if (existing != null) return existing;
-    final factory = _databaseFactory ?? databaseFactory;
-    final databasePath =
-        _databasePath ??
-        path.join(await factory.getDatabasesPath(), 'petalpop_offline.db');
-    final database = await factory.openDatabase(
-      databasePath,
-      options: OpenDatabaseOptions(
-        version: 2,
-        onCreate: (db, _) async {
+  final existing = _dailyContentDatabase;
+  if (existing != null) return existing;
+
+  final factory = _databaseFactory ?? databaseFactory;
+  final databasePath =
+      _databasePath ??
+      path.join(await factory.getDatabasesPath(), 'petalpop_offline.db');
+
+  final database = await factory.openDatabase(
+    databasePath,
+    options: OpenDatabaseOptions(
+      version: 3,
+      onCreate: (db, _) async {
+        await _createDailyContentCacheTable(db);
+        await _createPendingChallengeOperationsTable(db);
+        await _createPendingSyncOperationsTable(db);
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 1) {
           await _createDailyContentCacheTable(db);
+        }
+
+        if (oldVersion < 2) {
           await _createPendingChallengeOperationsTable(db);
-        },
-        onUpgrade: (db, oldVersion, newVersion) async {
-          if (oldVersion < 1) await _createDailyContentCacheTable(db);
-          if (oldVersion < 2) {
-            await _createPendingChallengeOperationsTable(db);
-          }
-        },
-      ),
-    );
-    _dailyContentDatabase = database;
-    return database;
-  }
+        }
+
+        if (oldVersion < 3) {
+          await _createPendingSyncOperationsTable(db);
+        }
+      },
+    ),
+  );
+
+  _dailyContentDatabase = database;
+  return database;
+}
 
   Future<void> _createDailyContentCacheTable(DatabaseExecutor db) => db.execute(
     'CREATE TABLE daily_content_cache ('
@@ -215,6 +303,18 @@ class LocalDataService {
     'local_date TEXT NOT NULL, '
     'challenge_id TEXT NOT NULL)',
   );
+
+Future<void> _createPendingSyncOperationsTable(
+  DatabaseExecutor db,
+) => db.execute(
+  'CREATE TABLE pending_sync_operations ('
+  'id TEXT PRIMARY KEY, '
+  'user_id TEXT NOT NULL, '
+  'entity TEXT NOT NULL CHECK (entity IN (\'mood\', \'memory\')), '
+  'operation TEXT NOT NULL CHECK (operation IN (\'create\', \'update\', \'delete\')), '
+  'payload_json TEXT NOT NULL, '
+  'created_at TEXT NOT NULL)',
+);
 
   Future<List<String>> loadCompletedChallenges() async =>
       await preferences.getStringList('garden.completed') ?? [];
@@ -325,29 +425,23 @@ class LocalDataService {
       );
 
   Future<List<MoodEntry>> loadMoods() async {
-    final data = await preferences.getString('moods');
-    if (data == null) return [];
-    return (jsonDecode(data) as List<dynamic>)
-        .map((entry) => _moodFromJson(entry as Map<String, dynamic>))
-        .toList();
-  }
+  final data = await preferences.getString('moods');
+  if (data == null) return [];
 
-  Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
-    'moods',
-    jsonEncode(
-      entries
-          .map(
-            (entry) => {
-              'mood': entry.mood,
-              'emoji': entry.emoji,
-              'note': entry.note,
-              'createdAt': entry.createdAt.toIso8601String(),
-            },
-          )
-          .toList(),
-    ),
-  );
+  final entries = (jsonDecode(data) as List<dynamic>)
+      .map((entry) => _moodFromJson(entry as Map<String, dynamic>))
+      .toList();
 
+  // Save migrated entries so their IDs remain stable.
+  await saveMoods(entries);
+
+  return entries;
+}
+
+Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
+  'moods',
+  jsonEncode(entries.map((entry) => entry.toJson()).toList()),
+);
   Future<List<MemoryEntry>> loadMemories() async {
     final data = await preferences.getString('memories');
     if (data == null) return [];
@@ -362,31 +456,35 @@ class LocalDataService {
   );
 
   Future<MemoryEntry> copyMediaIntoApp({
-    required String sourcePath,
-    required MemoryType type,
-    required String extension,
-  }) async {
-    final directory = await _getMediaDirectory(type);
-    final id =
-        '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32)}';
-    final normalizedExtension = extension.startsWith('.')
-        ? extension
-        : '.$extension';
-    final file = await File(
-      sourcePath,
-    ).copy('${directory.path}${Platform.pathSeparator}$id$normalizedExtension');
-    final now = DateTime.now();
-    return MemoryEntry(
-      id: id,
-      type: type,
-      title: type == MemoryType.photo
-          ? 'A little photo memory'
-          : 'Voice memory',
-      description: '',
-      createdAt: now,
-      filePath: file.path,
-    );
-  }
+  required String sourcePath,
+  required MemoryType type,
+  required String extension,
+}) async {
+  final directory = await _getMediaDirectory(type);
+
+  final memoryId = const Uuid().v4();
+  final fileId =
+      '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32)}';
+
+  final normalizedExtension = extension.startsWith('.')
+      ? extension
+      : '.$extension';
+
+  final file = await File(sourcePath).copy(
+    '${directory.path}${Platform.pathSeparator}$fileId$normalizedExtension',
+  );
+
+  return MemoryEntry(
+    id: memoryId,
+    type: type,
+    title: type == MemoryType.photo
+        ? 'A little photo memory'
+        : 'Voice memory',
+    description: '',
+    createdAt: DateTime.now(),
+    filePath: file.path,
+  );
+}
 
   Future<String> createMediaPath({
     required MemoryType type,
@@ -424,10 +522,11 @@ class LocalDataService {
     return directory;
   }
 
-  MoodEntry _moodFromJson(Map<String, dynamic> json) => MoodEntry(
-    mood: json['mood'] as String,
-    emoji: json['emoji'] as String,
-    note: json['note'] as String,
-    createdAt: DateTime.parse(json['createdAt'] as String),
-  );
+ MoodEntry _moodFromJson(Map<String, dynamic> json) => MoodEntry(
+  id: json['id'] as String? ?? const Uuid().v4(),
+  mood: json['mood'] as String,
+  emoji: json['emoji'] as String,
+  note: json['note'] as String? ?? '',
+  createdAt: DateTime.parse(json['createdAt'] as String),
+);
 }

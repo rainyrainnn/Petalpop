@@ -4,5 +4,9 @@ abstract final class SupabaseConfig {
     'SUPABASE_PUBLISHABLE_KEY',
   );
 
-  static bool get isConfigured => url.isNotEmpty && publishableKey.isNotEmpty;
+  static String get cleanUrl => url.trim();
+  static String get cleanPublishableKey => publishableKey.trim();
+
+  static bool get isConfigured =>
+      cleanUrl.isNotEmpty && cleanPublishableKey.isNotEmpty;
 }
