@@ -117,13 +117,36 @@ class _DailyChallengesScreenState extends State<DailyChallengesScreen> {
                   style: theme.textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 4),
-Text(
-  'Your progress is saved on this device. '
-  'We’ll sync it when you’re back online. 🌷',
-  style: theme.textTheme.bodySmall?.copyWith(
-    color: theme.colorScheme.secondary,
-  ),
-),
+                Text(
+                  'Your progress is saved on this device. '
+                  'We’ll sync it when you’re back online. 🌷',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.secondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (session.isOffline) ...[
+          const SizedBox(height: 12),
+          PetalCard(
+            child: Row(
+              children: [
+                Icon(
+                  Icons.signal_wifi_off_rounded,
+                  size: 18,
+                  color: theme.colorScheme.secondary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'You\'re offline — showing saved challenges.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.secondary,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),

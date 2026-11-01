@@ -13,29 +13,29 @@ import 'services/supabase_data_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (SupabaseConfig.cleanUrl.isNotEmpty !=
-    SupabaseConfig.cleanPublishableKey.isNotEmpty) {
+      SupabaseConfig.cleanPublishableKey.isNotEmpty) {
     throw StateError(
       'Configure both SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY, or neither.',
     );
   }
   SupabaseClient? client;
 
-if (SupabaseConfig.isConfigured) {
-  debugPrint('Supabase configured: ${SupabaseConfig.isConfigured}');
-  debugPrint('Supabase URL: ${SupabaseConfig.cleanUrl}');
-  debugPrint(
-    'Publishable key loaded: ${SupabaseConfig.cleanPublishableKey.isNotEmpty}',
-  );
+  if (SupabaseConfig.isConfigured) {
+    debugPrint('Supabase configured: ${SupabaseConfig.isConfigured}');
+    debugPrint('Supabase URL: ${SupabaseConfig.cleanUrl}');
+    debugPrint(
+      'Publishable key loaded: ${SupabaseConfig.cleanPublishableKey.isNotEmpty}',
+    );
 
- await Supabase.initialize(
-  url: SupabaseConfig.cleanUrl,
-  publishableKey: SupabaseConfig.cleanPublishableKey,
-);
+    await Supabase.initialize(
+      url: SupabaseConfig.cleanUrl,
+      publishableKey: SupabaseConfig.cleanPublishableKey,
+    );
 
-  client = Supabase.instance.client;
-}
+    client = Supabase.instance.client;
+  }
 
-runApp(PetalPopApp(client: client));
+  runApp(PetalPopApp(client: client));
 }
 
 class PetalPopApp extends StatefulWidget {
@@ -57,6 +57,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
   AuthMode? _authMode;
   late final LocalDataService _storage;
   late final SupabaseDataService? _backend;
+  final _scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
   String? _profileLoadError;
 
   @override
@@ -73,6 +74,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
     return MaterialApp(
       title: 'PetalPop',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _scaffoldMessengerKey,
       theme: PetalPopTheme.light,
       darkTheme: PetalPopTheme.dark,
       themeMode: _themeMode,
@@ -211,7 +213,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
       }
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      _scaffoldMessengerKey.currentState?.showSnackBar(
         SnackBar(content: Text('Could not save your profile settings: $error')),
       );
     }
@@ -236,57 +238,98 @@ class _PetalPopAppState extends State<PetalPopApp> {
         data: {'display_name': displayName},
       );
       if (response.session == null) {
+        if (response.user?.identities?.isEmpty == true) {
+          return 'An account with this email already exists. Please log in.';
+        }
         return 'Account created. Check your email to confirm it, then log in.';
       }
     } else {
       await client.auth.signInWithPassword(email: email, password: password);
     }
 
-    final profile = await backend.loadProfile();
-    final profileName = profile['display_name'] as String;
-    final profileAvatarId = profile['avatar_id'] as String;
-    final profileTheme = profile['theme'] as String;
-    await _storage.saveProfile(
-      name: profileName,
-      avatar: profileAvatarId,
-      theme: profileTheme,
-    );
-    final timeZone = await FlutterTimezone.getLocalTimezone();
-    await backend.saveProfile(
-      displayName: profileName,
-      avatarId: profileAvatarId,
-      theme: profileTheme,
-      timeZone: timeZone.identifier,
-    );
+    final user = client.auth.currentUser;
+    if (user == null) {
+      throw StateError('Authentication completed without an active session.');
+    }
+    final metadataName = user.userMetadata?['display_name'];
+    final initialName =
+        displayName ??
+        (metadataName is String && metadataName.isNotEmpty
+            ? metadataName
+            : _displayName);
     if (!mounted) return null;
     setState(() {
-      _displayName = profileName;
-      _avatarId = profileAvatarId;
-      _themeMode = profileTheme == 'dark' ? ThemeMode.dark : ThemeMode.light;
+      _displayName = initialName;
       _authMode = null;
       _hasStarted = true;
+      _profileLoadError = null;
     });
+
+    try {
+      final profile = await backend.loadProfile();
+      final profileName = profile['display_name'] as String;
+      final profileAvatarId = profile['avatar_id'] as String;
+      final profileTheme = profile['theme'] as String;
+      await _storage.saveProfile(
+        name: profileName,
+        avatar: profileAvatarId,
+        theme: profileTheme,
+      );
+      if (!mounted) return null;
+      setState(() {
+        _displayName = profileName;
+        _avatarId = profileAvatarId;
+        _themeMode = profileTheme == 'dark' ? ThemeMode.dark : ThemeMode.light;
+      });
+      final timeZone = await FlutterTimezone.getLocalTimezone();
+      await backend.saveProfile(
+        displayName: profileName,
+        avatarId: profileAvatarId,
+        theme: profileTheme,
+        timeZone: timeZone.identifier,
+      );
+    } catch (error) {
+      if (!mounted) return null;
+      setState(() {
+        _profileLoadError =
+            'You are signed in, but your profile settings could not be synced: '
+            '$error';
+      });
+    }
     return null;
   }
 
   Future<void> _logout() async {
+    Future<void>? remoteSignOut;
     if (_backend != null) {
-      try {
-        await widget.client!.auth.signOut();
-      } catch (error) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not sign out: $error')));
-        return;
-      }
+      remoteSignOut = widget.client!.auth.signOut(scope: SignOutScope.local);
     }
+    if (!mounted) return;
     setState(() {
       _hasStarted = false;
       _authMode = null;
       _displayName = 'Sunshine';
       _avatarId = 'girl';
       _themeMode = ThemeMode.light;
+      _profileLoadError = null;
     });
+    if (remoteSignOut != null) {
+      try {
+        await remoteSignOut;
+      } catch (error) {
+        if (!mounted) return;
+        _scaffoldMessengerKey.currentState?.showSnackBar(
+          SnackBar(
+            content: Text(
+              error is AuthRetryableFetchException
+                  ? 'Signed out on this device. The server could not be '
+                        'reached to revoke the session.'
+                  : 'Signed out on this device, but server session revocation '
+                        'failed: $error',
+            ),
+          ),
+        );
+      }
+    }
   }
 }

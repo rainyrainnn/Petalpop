@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show Color;
@@ -61,10 +62,12 @@ class AppSession extends ChangeNotifier {
   Timer? _dateRefreshTimer;
   String? _lastObservedDateKey;
   DateTime? _lastBackendDateCheck;
+  DateTime? _lastOfflineRefreshAttempt;
   Future<void>? _pendingSyncFuture;
-  Future<void> _challengeMutationTail = Future<void>.value();
+  Future<void>? _challengeMutationTail;
   int _pendingChallengeOperationCount = 0;
   bool _isDisposed = false;
+  bool _isOfflineMode = false;
   bool isLoading = true;
   Object? loadError;
   Object? syncError;
@@ -593,6 +596,7 @@ class AppSession extends ChangeNotifier {
   static const dailyChallengeCount = 10;
   static const growthStagesPerFlower = 10;
   static const activeFlowerVisualStages = 8;
+  static const Duration _offlineRetryCooldown = Duration(minutes: 1);
 
   DateTime get now => _clock().toLocal();
   String get todayKey => dateKey(now);
@@ -651,6 +655,12 @@ class AppSession extends ChangeNotifier {
       _flowerCatalog.isNotEmpty &&
       _activeFlowerId == null &&
       unlockedFlowerCount == _flowerCatalog.length;
+  bool get isOffline {
+    final lastFailure = _lastOfflineRefreshAttempt;
+    if (!_isOfflineMode || lastFailure == null) return false;
+    return now.difference(lastFailure) < _offlineRetryCooldown;
+  }
+
   double get gardenProgressValue =>
       _flowerCatalog.isEmpty ? 0 : unlockedFlowerCount / _flowerCatalog.length;
   List<GardenFlower> get unlockedFlowers => List.unmodifiable(
@@ -666,6 +676,58 @@ class AppSession extends ChangeNotifier {
       '${date.year.toString().padLeft(4, '0')}-'
       '${date.month.toString().padLeft(2, '0')}-'
       '${date.day.toString().padLeft(2, '0')}';
+
+  DailyContent _defaultDailyContentForNow() {
+    final currentDate = now;
+    return DailyContent(
+      date: dateKey(currentDate),
+      challenges: challengesFor(currentDate),
+      quote: quoteFor(currentDate),
+    );
+  }
+
+  bool _shouldThrottleOfflineRefresh() {
+    final lastFailure = _lastOfflineRefreshAttempt;
+    if (!_isOfflineMode || lastFailure == null) return false;
+    return now.difference(lastFailure) < _offlineRetryCooldown;
+  }
+
+  bool _isExpectedNetworkFailure(Object error) {
+    if (error is SocketException ||
+        error is TimeoutException ||
+        error is HttpException) {
+      return true;
+    }
+    final normalized = error.toString().toLowerCase();
+    const keywords = <String>[
+      'socketexception',
+      'failed host lookup',
+      'failed to connect',
+      'connection refused',
+      'timed out',
+      'timeout',
+      'network is unreachable',
+      'no address associated',
+      'offline',
+      'unreachable',
+      'connection reset',
+      'temporarily unavailable',
+      'dns',
+      'internet',
+    ];
+    return keywords.any(normalized.contains);
+  }
+
+  void _markOfflineState(Object error) {
+    if (!_isExpectedNetworkFailure(error)) return;
+    _isOfflineMode = true;
+    _lastOfflineRefreshAttempt = now;
+  }
+
+  void _clearOfflineState() {
+    _isOfflineMode = false;
+    _lastOfflineRefreshAttempt = null;
+  }
 
   static DailyChallenge challengeFor(DateTime date) =>
       challengesFor(date).first;
@@ -742,15 +804,41 @@ class AppSession extends ChangeNotifier {
 
   Future<void> refreshDailyChallenges() async {
     if (backend == null) return;
-    final dailyContent = await backend!.loadDailyContent();
-    final progress = await backend!.loadGardenProgress();
-    if (_isDisposed) return;
-    await storage.saveDailyContentCache(dailyContent);
-    _setBackendDailyContent(dailyContent);
-    _replaceGardenProgress(progress, replaceAllCompletions: true);
-    await _saveGardenProgress();
-    loadError = null;
-    _notifyListenersIfAlive();
+    final cachedContent = await storage.loadDailyContentCache();
+    final fallbackContent = cachedContent ?? _defaultDailyContentForNow();
+    if (_shouldThrottleOfflineRefresh()) {
+      _setBackendDailyContent(fallbackContent);
+      loadError = null;
+      _notifyListenersIfAlive();
+      return;
+    }
+    try {
+      final dailyContent = await backend!.loadDailyContent();
+      final progress = await backend!.loadGardenProgress();
+      if (_isDisposed) return;
+      await storage.saveDailyContentCache(dailyContent);
+      _setBackendDailyContent(dailyContent);
+      _replaceGardenProgress(progress, replaceAllCompletions: true);
+      await _saveGardenProgress();
+      _clearOfflineState();
+      loadError = null;
+      _notifyListenersIfAlive();
+    } catch (error) {
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        if (cachedContent != null) {
+          _setBackendDailyContent(cachedContent);
+        } else {
+          _setBackendDailyContent(fallbackContent);
+        }
+        loadError = null;
+        _notifyListenersIfAlive();
+        return;
+      }
+      loadError = error;
+      _notifyListenersIfAlive();
+      rethrow;
+    }
   }
 
   @override
@@ -790,7 +878,11 @@ class AppSession extends ChangeNotifier {
           await _loadCachedBackendState();
           await _restorePendingChallengeOperations();
         } catch (error) {
-          loadError = error;
+          if (_isExpectedNetworkFailure(error)) {
+            _markOfflineState(error);
+          } else {
+            loadError = error;
+          }
         }
         isLoading = false;
         _notifyListenersIfAlive();
@@ -803,7 +895,12 @@ class AppSession extends ChangeNotifier {
           await _loadBackendState();
           loadError = null;
         } catch (error) {
-          loadError = error;
+          if (_isExpectedNetworkFailure(error)) {
+            _markOfflineState(error);
+            loadError = null;
+          } else {
+            loadError = error;
+          }
         }
         await refreshNotifications();
         return;
@@ -877,14 +974,31 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<bool> _undoDailyChallenge(String challengeId) async {
-    final date = dailyContentDate;
+    var date = dailyContentDate;
     if (_isAuthenticatedBackend &&
         !(_dailyCompletions[date]?.contains(challengeId) ?? false)) {
       try {
-        await _loadAuthoritativeCompletions(date);
+        final refreshedContent = await _refreshDailyContentForChallengeAction();
+        if (refreshedContent != null) {
+          date = refreshedContent.date;
+          await _loadAuthoritativeCompletions(date);
+          if (!refreshedContent.challenges.any(
+            (challenge) => challenge.id == challengeId,
+          )) {
+            throw StateError(
+              'This challenge is no longer assigned for $date. '
+              'Refresh the daily challenges and try again.',
+            );
+          }
+        }
       } catch (error) {
-        syncError = error;
-        _notifyListenersIfAlive();
+        if (_isExpectedNetworkFailure(error)) {
+          _markOfflineState(error);
+          _notifyListenersIfAlive();
+        } else {
+          syncError = error;
+          _notifyListenersIfAlive();
+        }
         return false;
       }
     }
@@ -952,8 +1066,101 @@ class AppSession extends ChangeNotifier {
         : _lifetimeGrowthPoints % growthStagesPerFlower;
   }
 
+  Future<DailyContent?> _refreshDailyContentForChallengeAction() async {
+    if (!_isAuthenticatedBackend) return null;
+    try {
+      final content = await backend!.loadDailyContent();
+      final changed =
+          _backendDate != content.date ||
+          !_sameChallengeIds(_backendChallenges, content.challenges) ||
+          _backendQuote != content.quote;
+      if (changed) {
+        await storage.saveDailyContentCache(content);
+        _setBackendDailyContent(content);
+        _clearOfflineState();
+        loadError = null;
+      }
+      return content;
+    } catch (error) {
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        loadError = null;
+        _notifyListenersIfAlive();
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  Future<List<String>> _applyPendingChallengeOperations(
+    String date,
+    List<String> authoritativeCompletions,
+  ) async {
+    if (!_pendingChallengeDates.contains(date)) return authoritativeCompletions;
+    final userId = backend?.authenticatedUserId;
+    if (userId == null) return authoritativeCompletions;
+    final operations = await storage.loadPendingChallengeOperations(userId);
+    final completions = authoritativeCompletions.toSet();
+    for (final operation in operations.where(
+      (operation) => operation.localDate == date,
+    )) {
+      if (operation.type == ChallengeOperationType.complete) {
+        completions.add(operation.challengeId);
+      } else {
+        completions.remove(operation.challengeId);
+      }
+    }
+    return completions.toList(growable: false);
+  }
+
   Future<bool> _completeDailyChallenge(String challengeId) async {
-    final date = dailyContentDate;
+    var date = dailyContentDate;
+    if (_isAuthenticatedBackend &&
+        !(_dailyCompletions[date]?.contains(challengeId) ?? false)) {
+      try {
+        final refreshedContent = await _refreshDailyContentForChallengeAction();
+        if (refreshedContent != null) {
+          date = refreshedContent.date;
+          if (!refreshedContent.challenges.any(
+            (challenge) => challenge.id == challengeId,
+          )) {
+            throw StateError(
+              'This challenge is no longer assigned for $date. '
+              'Refresh the daily challenges and try again.',
+            );
+          }
+          List<String>? authoritativeCompletions;
+          try {
+            authoritativeCompletions = await _loadAuthoritativeCompletions(
+              date,
+            );
+          } catch (error) {
+            if (_isExpectedNetworkFailure(error)) {
+              _markOfflineState(error);
+            } else {
+              syncError = error;
+            }
+            _notifyListenersIfAlive();
+          }
+          if (authoritativeCompletions != null) {
+            if (authoritativeCompletions.contains(challengeId)) {
+              final progress = await backend!.loadGardenProgress();
+              _replaceGardenProgress(progress, replaceAllCompletions: true);
+              await _saveGardenProgress();
+              _notifyListenersIfAlive();
+              return false;
+            }
+          }
+        }
+      } catch (error) {
+        if (_isExpectedNetworkFailure(error)) {
+          _markOfflineState(error);
+          _notifyListenersIfAlive();
+        } else {
+          rethrow;
+        }
+      }
+    }
     if (!dailyChallenges.any((challenge) => challenge.id == challengeId)) {
       if (_isAuthenticatedBackend) {
         throw StateError(
@@ -1021,18 +1228,28 @@ class AppSession extends ChangeNotifier {
 
   bool get _isAuthenticatedBackend => backend?.authenticatedUserId != null;
 
-  Future<T> _serializeChallengeMutation<T>(
-    Future<T> Function() mutation,
-  ) async {
+  Future<T> _serializeChallengeMutation<T>(Future<T> Function() mutation) {
     final previous = _challengeMutationTail;
-    final finished = Completer<void>();
-    _challengeMutationTail = finished.future;
-    await previous;
-    try {
-      return await mutation();
-    } finally {
-      finished.complete();
-    }
+    final current = Completer<void>();
+    final currentFuture = current.future;
+    _challengeMutationTail = currentFuture;
+    return () async {
+      try {
+        if (previous != null) {
+          try {
+            await previous;
+          } catch (_) {
+            // A failed mutation must not prevent later mutations from running.
+          }
+        }
+        return await mutation();
+      } finally {
+        if (!current.isCompleted) current.complete();
+        if (identical(_challengeMutationTail, currentFuture)) {
+          _challengeMutationTail = null;
+        }
+      }
+    }();
   }
 
   Future<bool> _queueChallengeOperation({
@@ -1066,7 +1283,7 @@ class AppSession extends ChangeNotifier {
       return operationId;
     });
     if (operationId == null) return false;
-    await syncPendingChanges();
+    unawaited(syncPendingChanges());
     final synchronizedResult = _synchronizedChallengeResults.remove(
       operationId,
     );
@@ -1365,33 +1582,46 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> _loadBackendState() async {
-    final dailyContent = await backend!.loadDailyContent();
-    final results = await Future.wait([
-      backend!.loadGardenProgress(),
-      backend!.loadMoods(),
-      backend!.loadMemories(),
-    ]);
-    final pendingOperations = await storage.loadPendingChallengeOperations(
-      backend!.authenticatedUserId ?? 'guest',
-    );
-    _setPendingChallengeOperations(pendingOperations);
-    await storage.saveDailyContentCache(dailyContent);
-    await storage.saveMoods(results[1] as List<MoodEntry>);
-    await storage.saveMemories(results[2] as List<MemoryEntry>);
-    _setBackendDailyContent(dailyContent);
-    if (pendingOperations.isEmpty) {
-      await storage.saveGardenProgress(results[0] as GardenProgressData);
-      _replaceGardenProgress(
-        results[0] as GardenProgressData,
-        replaceAllCompletions: true,
+    final cachedContent = await storage.loadDailyContentCache();
+    final fallbackContent = cachedContent ?? _defaultDailyContentForNow();
+    try {
+      final dailyContent = await backend!.loadDailyContent();
+      final results = await Future.wait([
+        backend!.loadGardenProgress(),
+        backend!.loadMoods(),
+        backend!.loadMemories(),
+      ]);
+      final pendingOperations = await storage.loadPendingChallengeOperations(
+        backend!.authenticatedUserId ?? 'guest',
       );
+      _setPendingChallengeOperations(pendingOperations);
+      await storage.saveDailyContentCache(dailyContent);
+      await storage.saveMoods(results[1] as List<MoodEntry>);
+      await storage.saveMemories(results[2] as List<MemoryEntry>);
+      _setBackendDailyContent(dailyContent);
+      _clearOfflineState();
+      if (pendingOperations.isEmpty) {
+        await storage.saveGardenProgress(results[0] as GardenProgressData);
+        _replaceGardenProgress(
+          results[0] as GardenProgressData,
+          replaceAllCompletions: true,
+        );
+      }
+      _moodEntries
+        ..clear()
+        ..addAll(results[1] as List<MoodEntry>);
+      _memories
+        ..clear()
+        ..addAll(results[2] as List<MemoryEntry>);
+    } catch (error) {
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        _setBackendDailyContent(fallbackContent);
+        loadError = null;
+        return;
+      }
+      rethrow;
     }
-    _moodEntries
-      ..clear()
-      ..addAll(results[1] as List<MoodEntry>);
-    _memories
-      ..clear()
-      ..addAll(results[2] as List<MemoryEntry>);
   }
 
   Future<void> _loadCachedBackendState() async {
@@ -1440,7 +1670,12 @@ class AppSession extends ChangeNotifier {
     try {
       await refreshDailyChallenges();
     } catch (error) {
-      loadError = error;
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        loadError = null;
+      } else {
+        loadError = error;
+      }
       _notifyListenersIfAlive();
     }
   }
@@ -1459,10 +1694,16 @@ class AppSession extends ChangeNotifier {
       _setBackendDailyContent(content);
       _replaceGardenProgress(progress, replaceAllCompletions: true);
       await _saveGardenProgress();
+      _clearOfflineState();
       loadError = null;
       _notifyListenersIfAlive();
     } catch (error) {
-      loadError = error;
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        loadError = null;
+      } else {
+        loadError = error;
+      }
       _notifyListenersIfAlive();
     }
   }
@@ -1520,8 +1761,12 @@ class AppSession extends ChangeNotifier {
   Future<List<String>> _loadAuthoritativeCompletions(String date) async {
     final challengeIds = await backend!.loadDailyChallengeCompletions(date);
     _authoritativeCompletionDates.add(date);
-    _replaceDailyCompletions(date, challengeIds);
-    return challengeIds;
+    final pendingAwareCompletions = await _applyPendingChallengeOperations(
+      date,
+      challengeIds,
+    );
+    _replaceDailyCompletions(date, pendingAwareCompletions);
+    return pendingAwareCompletions;
   }
 
   void _replaceGardenProgress(

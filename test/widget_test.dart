@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,7 @@ import 'package:petalpop/main.dart';
 import 'package:petalpop/models/garden_progress.dart';
 import 'package:petalpop/models/memory_entry.dart';
 import 'package:petalpop/models/mood_entry.dart';
+import 'package:petalpop/screens/auth_screen.dart';
 import 'package:petalpop/screens/flower_garden_screen.dart';
 import 'package:petalpop/screens/daily_challenges_screen.dart';
 import 'package:petalpop/screens/memory_journal_screen.dart';
@@ -20,6 +22,7 @@ import 'package:petalpop/widgets/flower_illustration.dart';
 import 'package:petalpop/widgets/mood_face_illustration.dart';
 import 'package:petalpop/widgets/app_widgets.dart';
 import 'package:petalpop/widgets/profile_avatar.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 late MemoryLocalDataService _storage;
 
@@ -128,6 +131,209 @@ void main() {
     );
     expect(find.text('My Mood'), findsOneWidget);
   });
+
+  testWidgets('configured sign-up submits account details to auth handler', (
+    WidgetTester tester,
+  ) async {
+    AuthMode? submittedMode;
+    String? submittedEmail;
+    String? submittedName;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthScreen(
+          mode: AuthMode.signUp,
+          onBack: () {},
+          onContinueAsDemo: (_) {},
+          onAuthenticate:
+              ({
+                required AuthMode mode,
+                required String email,
+                required String password,
+                required String? displayName,
+              }) async {
+                submittedMode = mode;
+                submittedEmail = email;
+                submittedName = displayName;
+                return null;
+              },
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextFormField).at(0), 'Daisy Bloom');
+    await tester.enterText(
+      find.byType(TextFormField).at(1),
+      'daisy@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(2), 'flower123');
+    await tester.enterText(find.byType(TextFormField).at(3), 'flower123');
+    await tester.tap(find.text('Create account'));
+    await tester.pump();
+
+    expect(submittedMode, AuthMode.signUp);
+    expect(submittedEmail, 'daisy@example.com');
+    expect(submittedName, 'Daisy Bloom');
+  });
+
+  testWidgets('configured login submits credentials to auth handler', (
+    WidgetTester tester,
+  ) async {
+    AuthMode? submittedMode;
+    String? submittedEmail;
+    String? submittedPassword;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthScreen(
+          mode: AuthMode.logIn,
+          onBack: () {},
+          onContinueAsDemo: (_) {},
+          onAuthenticate:
+              ({
+                required AuthMode mode,
+                required String email,
+                required String password,
+                required String? displayName,
+              }) async {
+                submittedMode = mode;
+                submittedEmail = email;
+                submittedPassword = password;
+                return null;
+              },
+        ),
+      ),
+    );
+
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'daisy@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'flower123');
+    await tester.tap(find.text('Log In'));
+    await tester.pump();
+
+    expect(submittedMode, AuthMode.logIn);
+    expect(submittedEmail, 'daisy@example.com');
+    expect(submittedPassword, 'flower123');
+  });
+
+  testWidgets('login shows friendly guidance for an offline auth request', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthScreen(
+          mode: AuthMode.logIn,
+          onBack: () {},
+          onContinueAsDemo: (_) {},
+          onAuthenticate:
+              ({
+                required AuthMode mode,
+                required String email,
+                required String password,
+                required String? displayName,
+              }) async {
+                throw AuthRetryableFetchException(
+                  message: 'SocketException: Failed host lookup',
+                );
+              },
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'daisy@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'flower123');
+    await tester.tap(find.text('Log In'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.text(
+        'Could not connect to PetalPop. Check your internet connection and '
+        'try again.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('SocketException'), findsNothing);
+  });
+
+  testWidgets(
+    'restored session opens Home offline and logout returns to welcome',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final client = SupabaseClient(
+        'http://127.0.0.1:1',
+        'test-key',
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+      );
+      final payload = base64Url
+          .encode(
+            utf8.encode(
+              jsonEncode({
+                'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600,
+                'sub': 'offline-user',
+                'role': 'authenticated',
+              }),
+            ),
+          )
+          .replaceAll('=', '');
+      await client.auth.recoverSession(
+        jsonEncode({
+          'access_token': 'eyJhbGciOiJub25lIn0.$payload.signature',
+          'token_type': 'bearer',
+          'expires_in': 3600,
+          'refresh_token': 'offline-refresh-token',
+          'user': {
+            'id': 'offline-user',
+            'aud': 'authenticated',
+            'role': 'authenticated',
+            'email': 'daisy@example.com',
+            'app_metadata': {
+              'provider': 'email',
+              'providers': ['email'],
+            },
+            'user_metadata': {'display_name': 'Daisy'},
+            'created_at': DateTime.now().toUtc().toIso8601String(),
+          },
+        }),
+      );
+
+      await tester.pumpWidget(PetalPopApp(storage: _storage, client: client));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(find.text('Welcome back'), findsNothing);
+
+      await tester.tap(find.text('Profile').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      final settingsList = find.descendant(
+        of: find.byType(SettingsScreen),
+        matching: find.byType(Scrollable),
+      );
+      await tester.scrollUntilVisible(
+        find.text('Log Out'),
+        240,
+        scrollable: settingsList,
+      );
+      await tester.tap(find.text('Log Out'));
+      await tester.pump();
+      expect(find.text('Log out of PetalPop?'), findsOneWidget);
+      await tester.tap(find.text('Log Out').last);
+      await tester.pump();
+
+      expect(find.text('Your Daily Happy Space'), findsOneWidget);
+      expect(client.auth.currentUser, isNull);
+      client.dispose();
+    },
+  );
 
   testWidgets('four bottom tabs navigate and Home opens Mood and Memories', (
     WidgetTester tester,

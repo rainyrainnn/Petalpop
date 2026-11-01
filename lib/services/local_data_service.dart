@@ -182,63 +182,55 @@ class LocalDataService {
         .toList(growable: false);
   }
 
+  Future<void> enqueuePendingSyncOperation(
+    PendingSyncOperation operation,
+  ) async {
+    final db = await _getDailyContentDatabase();
 
-Future<void> enqueuePendingSyncOperation(
-  PendingSyncOperation operation,
-) async {
-  final db = await _getDailyContentDatabase();
-
-  await db.insert(
-    'pending_sync_operations',
-    {
+    await db.insert('pending_sync_operations', {
       'id': operation.id,
       'user_id': operation.userId,
       'entity': operation.entity,
       'operation': operation.operation,
       'payload_json': jsonEncode(operation.payload),
       'created_at': operation.createdAt,
-    },
-    conflictAlgorithm: ConflictAlgorithm.replace,
-  );
-}
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
 
+  Future<List<PendingSyncOperation>> loadPendingSyncOperations(
+    String userId,
+  ) async {
+    final db = await _getDailyContentDatabase();
 
-Future<List<PendingSyncOperation>> loadPendingSyncOperations(
-  String userId,
-) async {
-  final db = await _getDailyContentDatabase();
-
-  final rows = await db.query(
-    'pending_sync_operations',
-    where: 'user_id = ?',
-    whereArgs: [userId],
-    orderBy: 'created_at ASC',
-  );
-
-  return rows.map((row) {
-    return PendingSyncOperation(
-      id: row['id'] as String,
-      userId: row['user_id'] as String,
-      entity: row['entity'] as String,
-      operation: row['operation'] as String,
-      payload: jsonDecode(row['payload_json'] as String)
-          as Map<String, dynamic>,
-      createdAt: row['created_at'] as String,
+    final rows = await db.query(
+      'pending_sync_operations',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'created_at ASC',
     );
-  }).toList();
-}
 
+    return rows.map((row) {
+      return PendingSyncOperation(
+        id: row['id'] as String,
+        userId: row['user_id'] as String,
+        entity: row['entity'] as String,
+        operation: row['operation'] as String,
+        payload:
+            jsonDecode(row['payload_json'] as String) as Map<String, dynamic>,
+        createdAt: row['created_at'] as String,
+      );
+    }).toList();
+  }
 
-Future<void> deletePendingSyncOperation(String id) async {
-  final db = await _getDailyContentDatabase();
+  Future<void> deletePendingSyncOperation(String id) async {
+    final db = await _getDailyContentDatabase();
 
-  await db.delete(
-    'pending_sync_operations',
-    where: 'id = ?',
-    whereArgs: [id],
-  );
-}
-
+    await db.delete(
+      'pending_sync_operations',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
 
   Future<void> removePendingChallengeOperation(int id) async {
     final database = await _getDailyContentDatabase();
@@ -249,54 +241,53 @@ Future<void> deletePendingSyncOperation(String id) async {
     );
   }
 
-
   Future<Database> _getDailyContentDatabase() async {
-  final existing = _dailyContentDatabase;
-  if (existing != null) return existing;
+    final existing = _dailyContentDatabase;
+    if (existing != null) return existing;
 
-  final factory = _databaseFactory ?? databaseFactory;
-  final databasePath =
-      _databasePath ??
-      path.join(await factory.getDatabasesPath(), 'petalpop_offline.db');
+    final factory = _databaseFactory ?? databaseFactory;
+    final databasePath =
+        _databasePath ??
+        path.join(await factory.getDatabasesPath(), 'petalpop_offline.db');
 
-  final database = await factory.openDatabase(
-    databasePath,
-    options: OpenDatabaseOptions(
-      version: 3,
-      onCreate: (db, _) async {
-        await _createDailyContentCacheTable(db);
-        await _createPendingChallengeOperationsTable(db);
-        await _createPendingSyncOperationsTable(db);
-      },
-      onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 1) {
+    final database = await factory.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (db, _) async {
           await _createDailyContentCacheTable(db);
-        }
-
-        if (oldVersion < 2) {
           await _createPendingChallengeOperationsTable(db);
-        }
-
-        if (oldVersion < 3) {
           await _createPendingSyncOperationsTable(db);
-        }
-      },
-    ),
-  );
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 1) {
+            await _createDailyContentCacheTable(db);
+          }
 
-  _dailyContentDatabase = database;
-  return database;
-}
+          if (oldVersion < 2) {
+            await _createPendingChallengeOperationsTable(db);
+          }
+
+          if (oldVersion < 3) {
+            await _createPendingSyncOperationsTable(db);
+          }
+        },
+      ),
+    );
+
+    _dailyContentDatabase = database;
+    return database;
+  }
 
   Future<void> _createDailyContentCacheTable(DatabaseExecutor db) => db.execute(
-    'CREATE TABLE daily_content_cache ('
+    'CREATE TABLE IF NOT EXISTS daily_content_cache ('
     'local_date TEXT PRIMARY KEY, content_json TEXT NOT NULL)',
   );
 
   Future<void> _createPendingChallengeOperationsTable(
     DatabaseExecutor db,
   ) => db.execute(
-    'CREATE TABLE pending_challenge_operations ('
+    'CREATE TABLE IF NOT EXISTS pending_challenge_operations ('
     'id INTEGER PRIMARY KEY AUTOINCREMENT, '
     'user_id TEXT NOT NULL, '
     'operation TEXT NOT NULL CHECK (operation IN (\'complete\', \'undo\')), '
@@ -304,17 +295,17 @@ Future<void> deletePendingSyncOperation(String id) async {
     'challenge_id TEXT NOT NULL)',
   );
 
-Future<void> _createPendingSyncOperationsTable(
-  DatabaseExecutor db,
-) => db.execute(
-  'CREATE TABLE pending_sync_operations ('
-  'id TEXT PRIMARY KEY, '
-  'user_id TEXT NOT NULL, '
-  'entity TEXT NOT NULL CHECK (entity IN (\'mood\', \'memory\')), '
-  'operation TEXT NOT NULL CHECK (operation IN (\'create\', \'update\', \'delete\')), '
-  'payload_json TEXT NOT NULL, '
-  'created_at TEXT NOT NULL)',
-);
+  Future<void> _createPendingSyncOperationsTable(
+    DatabaseExecutor db,
+  ) => db.execute(
+    'CREATE TABLE IF NOT EXISTS pending_sync_operations ('
+    'id TEXT PRIMARY KEY, '
+    'user_id TEXT NOT NULL, '
+    'entity TEXT NOT NULL CHECK (entity IN (\'mood\', \'memory\')), '
+    'operation TEXT NOT NULL CHECK (operation IN (\'create\', \'update\', \'delete\')), '
+    'payload_json TEXT NOT NULL, '
+    'created_at TEXT NOT NULL)',
+  );
 
   Future<List<String>> loadCompletedChallenges() async =>
       await preferences.getStringList('garden.completed') ?? [];
@@ -425,23 +416,23 @@ Future<void> _createPendingSyncOperationsTable(
       );
 
   Future<List<MoodEntry>> loadMoods() async {
-  final data = await preferences.getString('moods');
-  if (data == null) return [];
+    final data = await preferences.getString('moods');
+    if (data == null) return [];
 
-  final entries = (jsonDecode(data) as List<dynamic>)
-      .map((entry) => _moodFromJson(entry as Map<String, dynamic>))
-      .toList();
+    final entries = (jsonDecode(data) as List<dynamic>)
+        .map((entry) => _moodFromJson(entry as Map<String, dynamic>))
+        .toList();
 
-  // Save migrated entries so their IDs remain stable.
-  await saveMoods(entries);
+    // Save migrated entries so their IDs remain stable.
+    await saveMoods(entries);
 
-  return entries;
-}
+    return entries;
+  }
 
-Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
-  'moods',
-  jsonEncode(entries.map((entry) => entry.toJson()).toList()),
-);
+  Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
+    'moods',
+    jsonEncode(entries.map((entry) => entry.toJson()).toList()),
+  );
   Future<List<MemoryEntry>> loadMemories() async {
     final data = await preferences.getString('memories');
     if (data == null) return [];
@@ -456,35 +447,35 @@ Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
   );
 
   Future<MemoryEntry> copyMediaIntoApp({
-  required String sourcePath,
-  required MemoryType type,
-  required String extension,
-}) async {
-  final directory = await _getMediaDirectory(type);
+    required String sourcePath,
+    required MemoryType type,
+    required String extension,
+  }) async {
+    final directory = await _getMediaDirectory(type);
 
-  final memoryId = const Uuid().v4();
-  final fileId =
-      '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32)}';
+    final memoryId = const Uuid().v4();
+    final fileId =
+        '${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32)}';
 
-  final normalizedExtension = extension.startsWith('.')
-      ? extension
-      : '.$extension';
+    final normalizedExtension = extension.startsWith('.')
+        ? extension
+        : '.$extension';
 
-  final file = await File(sourcePath).copy(
-    '${directory.path}${Platform.pathSeparator}$fileId$normalizedExtension',
-  );
+    final file = await File(sourcePath).copy(
+      '${directory.path}${Platform.pathSeparator}$fileId$normalizedExtension',
+    );
 
-  return MemoryEntry(
-    id: memoryId,
-    type: type,
-    title: type == MemoryType.photo
-        ? 'A little photo memory'
-        : 'Voice memory',
-    description: '',
-    createdAt: DateTime.now(),
-    filePath: file.path,
-  );
-}
+    return MemoryEntry(
+      id: memoryId,
+      type: type,
+      title: type == MemoryType.photo
+          ? 'A little photo memory'
+          : 'Voice memory',
+      description: '',
+      createdAt: DateTime.now(),
+      filePath: file.path,
+    );
+  }
 
   Future<String> createMediaPath({
     required MemoryType type,
@@ -522,11 +513,11 @@ Future<void> saveMoods(List<MoodEntry> entries) => preferences.setString(
     return directory;
   }
 
- MoodEntry _moodFromJson(Map<String, dynamic> json) => MoodEntry(
-  id: json['id'] as String? ?? const Uuid().v4(),
-  mood: json['mood'] as String,
-  emoji: json['emoji'] as String,
-  note: json['note'] as String? ?? '',
-  createdAt: DateTime.parse(json['createdAt'] as String),
-);
+  MoodEntry _moodFromJson(Map<String, dynamic> json) => MoodEntry(
+    id: json['id'] as String? ?? const Uuid().v4(),
+    mood: json['mood'] as String,
+    emoji: json['emoji'] as String,
+    note: json['note'] as String? ?? '',
+    createdAt: DateTime.parse(json['createdAt'] as String),
+  );
 }

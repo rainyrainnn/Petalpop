@@ -239,13 +239,13 @@ void main() {
         ),
       );
       await seedStorage.saveMoods([
-       MoodEntry(
-  id: const Uuid().v4(),
-  mood: 'Calm',
-  emoji: '🌿',
-  note: 'Taking it slowly.',
-  createdAt: DateTime(2026, 10, 27, 9),
-),
+        MoodEntry(
+          id: const Uuid().v4(),
+          mood: 'Calm',
+          emoji: '🌿',
+          note: 'Taking it slowly.',
+          createdAt: DateTime(2026, 10, 27, 9),
+        ),
       ]);
       await seedStorage.saveMemories([
         MemoryEntry(
@@ -257,9 +257,8 @@ void main() {
         ),
       ]);
 
-      final offlineError = StateError('Supabase is unreachable.');
       final backend = _FakeSupabaseDataService([content])
-        ..dailyContentError = offlineError;
+        ..dailyContentError = StateError('Supabase is unreachable.');
       final session = AppSession(
         LocalDataService(),
         clock: () => DateTime(2026, 10, 27, 12),
@@ -270,7 +269,8 @@ void main() {
       await session.initialize();
 
       expect(session.isLoading, isFalse);
-      expect(session.loadError, same(offlineError));
+      expect(session.loadError, isNull);
+      expect(session.isOffline, isTrue);
       expect(session.dailyChallenges.map((challenge) => challenge.id), [
         for (var index = 0; index < AppSession.dailyChallengeCount; index++)
           _challengeId('cached', index),
@@ -280,6 +280,57 @@ void main() {
       expect(session.lifetimeGrowthPoints, 12);
       expect(session.moodEntries, hasLength(1));
       expect(session.memories.single.title, 'A saved note');
+    },
+  );
+
+  test(
+    'offline refresh keeps cached challenges and suppresses repeated backend hits',
+    () async {
+      final storage = LocalDataService();
+      final cached = _dailyContent('2026-10-27', 'cached');
+      await storage.saveDailyContentCache(cached);
+      final backend = _FakeSupabaseDataService([cached])
+        ..dailyContentError = const SocketException('Failed host lookup');
+      var now = DateTime(2026, 10, 27, 12);
+      final session = AppSession(storage, clock: () => now, backend: backend);
+      addTearDown(session.dispose);
+
+      await session.initialize();
+      expect(session.isOffline, isTrue);
+      expect(session.dailyChallenges.first.id, _challengeId('cached', 0));
+
+      await session.refreshDailyChallenges();
+      expect(backend.dailyContentLoadCalls, 1);
+      expect(session.isOffline, isTrue);
+    },
+  );
+
+  test(
+    'offline refresh updates from Supabase once connectivity returns',
+    () async {
+      final storage = LocalDataService();
+      final cached = _dailyContent('2026-10-27', 'cached');
+      await storage.saveDailyContentCache(cached);
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ])..dailyContentError = const SocketException('Failed host lookup');
+      var now = DateTime(2026, 10, 27, 12);
+      final session = AppSession(storage, clock: () => now, backend: backend);
+      addTearDown(session.dispose);
+
+      await session.initialize();
+      expect(session.isOffline, isTrue);
+
+      now = now.add(const Duration(minutes: 2));
+      backend.dailyContentError = null;
+      await session.refreshDailyChallenges();
+
+      expect(session.isOffline, isFalse);
+      expect(session.dailyChallenges.first.id, _challengeId('day', 0));
+      expect(
+        session.dailyChallenges.map((challenge) => challenge.id).first,
+        _challengeId('day', 0),
+      );
     },
   );
 
@@ -464,9 +515,11 @@ void main() {
       await session.completeDailyChallenge(selected);
       await session.completeDailyChallenge(preserved);
       await session.completeDailyChallenge(alsoPreserved);
+      await session.syncPendingChanges();
       expect(session.growthPoints, 3);
 
       expect(await session.undoDailyChallenge(selected), isTrue);
+      await session.syncPendingChanges();
       expect(session.completedToday, contains(preserved));
       expect(session.completedToday, contains(alsoPreserved));
       expect(session.completedToday, isNot(contains(selected)));
@@ -520,7 +573,9 @@ void main() {
       final preserved = _challengeId('day', 1);
       await session.completeDailyChallenge(selected);
       await session.completeDailyChallenge(preserved);
+      await session.syncPendingChanges();
       expect(await session.undoDailyChallenge(selected), isTrue);
+      await session.syncPendingChanges();
 
       backend.gardenCompletionOverride = {
         '2026-10-27': [selected, preserved],
@@ -572,6 +627,7 @@ void main() {
       expect(session.completedToday, {selected});
 
       expect(await session.undoDailyChallenge(selected), isTrue);
+      await session.syncPendingChanges();
       expect(backend.undoneChallenges, [('2026-10-27', selected)]);
       expect(session.completedToday, {preserved, alsoPreserved});
       expect(session.growthPoints, 2);
@@ -621,9 +677,11 @@ void main() {
       final preserved = _challengeId('day', 1);
       await session.completeDailyChallenge(selected);
       await session.completeDailyChallenge(preserved);
+      await session.syncPendingChanges();
       backend.omitGardenCompletionDates.add('2026-10-26');
 
       expect(await session.undoDailyChallenge(selected), isTrue);
+      await session.syncPendingChanges();
       expect(session.completedToday, contains(preserved));
       expect(session.completedToday, isNot(contains(selected)));
       expect(session.completedChallengeCount, 2);
@@ -649,9 +707,11 @@ void main() {
       await session.initialize();
       final selected = _challengeId('day', 0);
       await session.completeDailyChallenge(selected);
+      await session.syncPendingChanges();
 
       backend.undoError = StateError('The undo RPC is unavailable.');
       expect(await session.undoDailyChallenge(selected), isTrue);
+      await session.syncPendingChanges();
 
       expect(session.completedToday, isNot(contains(selected)));
       expect(session.growthPoints, 0);
@@ -677,18 +737,21 @@ void main() {
       final challengeId = _challengeId('day', 0);
 
       expect(await session.completeDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
       expect(session.notifications, hasLength(1));
       final originalNotificationId = session.notifications.single.id;
       await session.markNotificationRead(originalNotificationId);
       expect(session.unreadNotificationCount, 0);
 
       expect(await session.undoDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
       expect(session.notifications, isEmpty);
       expect(session.unreadNotificationCount, 0);
       expect(backend.notifications.single.isRetracted, isTrue);
       expect(backend.notifications.single.isRead, isTrue);
 
       expect(await session.completeDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
       expect(session.notifications, hasLength(1));
       expect(session.notifications.single.id, isNot(originalNotificationId));
       expect(session.notifications.single.isRead, isFalse);
@@ -816,6 +879,7 @@ void main() {
       await session.initialize();
       final challengeId = _challengeId('day', 0);
       expect(await session.completeDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
 
       expect(session.completedToday, contains(challengeId));
       expect(session.completedTodayCount, 1);
@@ -839,8 +903,10 @@ void main() {
       await session.initialize();
       final challengeId = _challengeId('day', 0);
       await session.completeDailyChallenge(challengeId);
+      await session.syncPendingChanges();
 
       expect(await session.undoDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
       expect(session.completedToday, isNot(contains(challengeId)));
       expect(session.growthPoints, 0);
       expect(session.lifetimeGrowthPoints, 0);
@@ -872,10 +938,12 @@ void main() {
       await session.initialize();
       final challengeId = _challengeId('day', 0);
       await session.completeDailyChallenge(challengeId);
+      await session.syncPendingChanges();
 
       expect(session.activeFlowerId, 'flower-02');
       expect(session.unlockedFlowerCount, 2);
       expect(await session.undoDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
 
       expect(session.activeFlowerId, 'flower-02');
       expect(session.growthPoints, 9);
@@ -1226,6 +1294,7 @@ void main() {
 
     final challengeId = _challengeId('day', 0);
     expect(await session.completeDailyChallenge(challengeId), isTrue);
+    await session.syncPendingChanges();
     expect(await session.completeDailyChallenge(challengeId), isFalse);
 
     expect(backend.completedChallenges, [('2026-10-27', challengeId)]);
@@ -1278,6 +1347,7 @@ void main() {
       backend.recordExistingCompletion('2026-10-27', challengeId);
 
       expect(await session.completeDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
       expect(session.completedToday, contains(challengeId));
       expect(session.pendingChallengeSyncCount, 1);
       expect(
@@ -1302,6 +1372,7 @@ void main() {
       await firstSession.initialize();
       final challengeId = _challengeId('day', 0);
       expect(await firstSession.completeDailyChallenge(challengeId), isTrue);
+      await firstSession.syncPendingChanges();
       firstSession.dispose();
 
       final restoredSession = AppSession(
@@ -1328,6 +1399,7 @@ void main() {
       final backend = _FakeSupabaseDataService([
         _dailyContent('2026-10-27', 'yesterday'),
         _dailyContent('2026-10-27', 'yesterday'),
+        _dailyContent('2026-10-27', 'yesterday'),
         _dailyContent('2026-10-28', 'today'),
       ]);
       final session = AppSession(
@@ -1339,6 +1411,7 @@ void main() {
       await session.initialize();
       final yesterdayChallenge = _challengeId('yesterday', 0);
       expect(await session.completeDailyChallenge(yesterdayChallenge), isTrue);
+      await session.syncPendingChanges();
 
       await session.refreshDailyChallenges();
 
@@ -1367,9 +1440,11 @@ void main() {
     final firstChallenge = _challengeId('day', 0);
     final failedChallenge = _challengeId('day', 1);
     expect(await session.completeDailyChallenge(firstChallenge), isTrue);
+    await session.syncPendingChanges();
     backend.completionError = StateError('request failed');
 
     expect(await session.completeDailyChallenge(failedChallenge), isTrue);
+    await session.syncPendingChanges();
 
     expect(session.completedToday, contains(firstChallenge));
     expect(session.completedToday, contains(failedChallenge));
@@ -1399,6 +1474,7 @@ void main() {
       backend.gardenProgressError = StateError('garden query failed');
 
       expect(await session.completeDailyChallenge(challengeId), isTrue);
+      await session.syncPendingChanges();
 
       expect(session.completedToday, contains(challengeId));
       expect(session.growthPoints, 1);
@@ -1450,6 +1526,7 @@ void main() {
       firstProgressGate.complete();
       expect(await firstCompletion, isTrue);
       expect(await secondCompletion, isTrue);
+      await session.syncPendingChanges();
       expect(
         session.completedToday,
         containsAll([firstChallenge, secondChallenge]),
@@ -1463,14 +1540,27 @@ void main() {
   testWidgets('local completion appears while the backend sync is waiting', (
     tester,
   ) async {
+    late final Completer<void> completionGate;
+    await tester.runAsync(() async {
+      completionGate = Completer<void>();
+    });
     final backend = _FakeSupabaseDataService([
       _dailyContent('2026-10-27', 'day'),
-    ])..completionError = StateError('offline');
+    ])..completionGate = completionGate;
     final session = AppSession(
       LocalDataService(),
       clock: () => DateTime(2026, 10, 27, 12),
       backend: backend,
     );
+    addTearDown(() async {
+      await tester.runAsync(() async {
+        if (!completionGate.isCompleted) completionGate.complete();
+      });
+      await tester.pump();
+      await tester.runAsync(session.syncPendingChanges);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+    });
     await tester.runAsync(session.initialize);
 
     final firstChallenge = _challengeId('day', 0);
@@ -1500,12 +1590,12 @@ void main() {
       ),
     );
     await tester.scrollUntilVisible(
-      find.text('day challenge 1'),
+      find.text('day challenge 0'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.scrollUntilVisible(
-      find.text('day challenge 0'),
+      find.text('day challenge 1'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
@@ -1520,9 +1610,6 @@ void main() {
     );
     expect(session.pendingChallengeSyncCount, 2);
     expect(tester.takeException(), isNull);
-
-    await tester.pumpWidget(const SizedBox());
-    session.dispose();
   });
 
   testWidgets('reopening the challenges screen restores undo state', (
@@ -1713,7 +1800,7 @@ void main() {
     expect(find.text('DONE'), findsOneWidget);
     expect(find.text('Undo'), findsOneWidget);
     expect(find.text('Saving…'), findsNothing);
-    expect(session.isChallengeSaving(_challengeId('day', 0)), isTrue);
+    expect(session.isChallengeSaving(_challengeId('day', 0)), isFalse);
     expect(session.completedToday, contains(_challengeId('day', 0)));
     expect(session.pendingChallengeSyncCount, 1);
     expect(session.completedToday, contains(_challengeId('day', 0)));
@@ -1802,6 +1889,7 @@ void main() {
 
       final currentChallenge = _challengeId('current', 0);
       expect(await session.completeDailyChallenge(currentChallenge), isTrue);
+      await session.syncPendingChanges();
       expect(backend.completedChallenges, [('2026-10-28', currentChallenge)]);
     },
   );
@@ -1875,6 +1963,7 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   Object? gardenProgressError;
   Completer<void>? nextProgressGate;
   DailyContent? dailyContentOverride;
+  int dailyContentLoadCalls = 0;
   var _dailyContentIndex = 0;
   var _notificationSequence = 0;
   GardenProgressData _progress = GardenProgressData(
@@ -1922,6 +2011,7 @@ class _FakeSupabaseDataService extends SupabaseDataService {
 
   @override
   Future<DailyContent> loadDailyContent() async {
+    dailyContentLoadCalls++;
     if (dailyContentError != null) throw dailyContentError!;
     if (dailyContentOverride != null) return dailyContentOverride!;
     final index = _dailyContentIndex.clamp(0, _dailyContentResults.length - 1);
