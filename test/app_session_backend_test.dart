@@ -62,6 +62,9 @@ void main() {
     );
     await database.delete('daily_content_cache');
     await database.delete('pending_challenge_operations');
+    if (await database.getVersion() >= 3) {
+      await database.delete('pending_sync_operations');
+    }
     await database.close();
   });
 
@@ -219,6 +222,130 @@ void main() {
     session.dispose();
   });
 
+  testWidgets(
+    'new signed-in garden starts at zero and the first flower stays locked until ten points',
+    (tester) async {
+      final storage = LocalDataService();
+      await storage.saveGardenProgress(
+        GardenProgressData(
+          dailyCompletions: {
+            '2026-10-27': [_challengeId('day', 1)],
+          },
+          flowerUnlockDates: {'flower-01': null, 'flower-02': '2026-10-20'},
+          flowerCatalog: AppSession.flowers,
+          activeFlowerId: 'flower-02',
+          growthPoints: 2,
+          lifetimeGrowthPoints: 12,
+        ),
+      );
+      final backend =
+          _FakeSupabaseDataService([_dailyContent('2026-10-27', 'day')])
+            ..setProgress(
+              GardenProgressData(
+                flowerCatalog: AppSession.flowers,
+                activeFlowerId: 'flower-01',
+              ),
+            );
+      final session = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(session.dispose);
+
+      await tester.runAsync(session.initialize);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AnimatedBuilder(
+              animation: session,
+              builder: (context, _) => DailyChallengesScreen(session: session),
+            ),
+          ),
+        ),
+      );
+
+      expect(session.completedTodayCount, 0);
+      expect(session.completedChallengeCount, 0);
+      expect(session.growthPoints, 0);
+      expect(session.lifetimeGrowthPoints, 0);
+      expect(session.activeFlower?.id, 'flower-01');
+      expect(session.unlockedFlowerCount, 0);
+      expect(find.textContaining('0 of 10 completed today'), findsOneWidget);
+      expect(
+        find.textContaining('0 of 10 points · 0 of 20 flowers unlocked'),
+        findsOneWidget,
+      );
+
+      final firstChallenge = _challengeId('day', 0);
+      await tester.runAsync(() async {
+        expect(await session.completeDailyChallenge(firstChallenge), isTrue);
+        await session.syncPendingChanges();
+      });
+      await tester.pump();
+
+      expect(session.completedTodayCount, 1);
+      expect(session.growthPoints, 1);
+      expect(session.lifetimeGrowthPoints, 1);
+      expect(session.unlockedFlowerCount, 0);
+      expect(session.activeFlower?.id, 'flower-01');
+      expect(find.textContaining('1 of 10 completed today'), findsOneWidget);
+      expect(
+        find.textContaining('1 of 10 points · 0 of 20 flowers unlocked'),
+        findsOneWidget,
+      );
+
+      await tester.runAsync(() async {
+        expect(await session.undoDailyChallenge(firstChallenge), isTrue);
+        await session.syncPendingChanges();
+      });
+      await tester.pump();
+      expect(session.completedTodayCount, 0);
+      expect(session.growthPoints, 0);
+      expect(session.lifetimeGrowthPoints, 0);
+      expect(session.unlockedFlowerCount, 0);
+      expect(session.activeFlower?.id, 'flower-01');
+
+      await tester.runAsync(() async {
+        expect(await session.completeDailyChallenge(firstChallenge), isTrue);
+        await session.syncPendingChanges();
+      });
+      await tester.pump();
+
+      await tester.runAsync(() async {
+        for (final challenge in session.dailyChallenges.skip(1)) {
+          expect(await session.completeDailyChallenge(challenge.id), isTrue);
+          await session.syncPendingChanges();
+        }
+      });
+      await tester.pump();
+
+      expect(session.lifetimeGrowthPoints, AppSession.growthStagesPerFlower);
+      expect(session.growthPoints, 0);
+      expect(session.unlockedFlowerCount, 1);
+      expect(session.activeFlower?.id, 'flower-02');
+      expect(find.textContaining('10 of 10 completed today'), findsOneWidget);
+      expect(
+        find.textContaining('0 of 10 points · 1 of 20 flowers unlocked'),
+        findsOneWidget,
+      );
+
+      await tester.runAsync(() async {
+        expect(
+          await session.undoDailyChallenge(session.dailyChallenges.last.id),
+          isTrue,
+        );
+        await session.syncPendingChanges();
+      });
+      await tester.pump();
+      expect(session.completedTodayCount, 9);
+      expect(session.growthPoints, 9);
+      expect(session.lifetimeGrowthPoints, 9);
+      expect(session.unlockedFlowerCount, 0);
+      expect(session.activeFlower?.id, 'flower-01');
+    },
+  );
+
   test(
     'signed-in session restores cached data when Supabase is offline',
     () async {
@@ -333,6 +460,151 @@ void main() {
       );
     },
   );
+
+  test(
+    'offline moods and memories stay local and sync after reconnecting',
+    () async {
+      final storage = LocalDataService();
+      final backend = _FakeSupabaseDataService([
+        _dailyContent('2026-10-27', 'day'),
+      ]);
+      final session = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      await session.initialize();
+      backend
+        ..moodError = const SocketException('Failed host lookup')
+        ..memoryError = const SocketException('Failed host lookup');
+
+      final mood = MoodEntry(
+        id: const Uuid().v4(),
+        mood: 'Calm',
+        emoji: '🌿',
+        note: 'An offline mood note.',
+        createdAt: DateTime(2026, 10, 27, 12),
+      );
+      final memory = MemoryEntry(
+        id: 'offline-memory',
+        type: MemoryType.note,
+        title: 'Offline memory',
+        description: 'Saved without a connection.',
+        createdAt: DateTime(2026, 10, 27, 12),
+      );
+      final deletedMemory = MemoryEntry(
+        id: 'offline-memory-deleted-before-sync',
+        type: MemoryType.note,
+        title: 'Deleted before sync',
+        description: 'This should not remain in the cloud.',
+        createdAt: DateTime(2026, 10, 27, 12),
+      );
+      await session.addMoodEntry(mood);
+      await session.addMemory(memory);
+      final updatedMemory = MemoryEntry(
+        id: memory.id,
+        type: memory.type,
+        title: 'Updated offline memory',
+        description: 'Changes are queued too.',
+        createdAt: memory.createdAt,
+      );
+      await session.updateMemory(updatedMemory);
+      await session.addMemory(deletedMemory);
+      await session.deleteMemory(deletedMemory.id);
+      await session.syncPendingChanges();
+
+      expect(session.moodEntries, contains(mood));
+      expect(session.memories.any((entry) => entry.id == memory.id), isTrue);
+      expect(
+        (await storage.loadMoods()).any((entry) => entry.id == mood.id),
+        isTrue,
+      );
+      expect(
+        (await storage.loadMemories()).any((entry) => entry.id == memory.id),
+        isTrue,
+      );
+      expect(await storage.loadPendingSyncOperations('test-user'), isNotEmpty);
+
+      session.dispose();
+      final reopened = AppSession(
+        storage,
+        clock: () => DateTime(2026, 10, 27, 12),
+        backend: backend,
+      );
+      addTearDown(reopened.dispose);
+      await reopened.initialize();
+      expect(reopened.moodEntries.any((entry) => entry.id == mood.id), isTrue);
+      expect(reopened.memories.any((entry) => entry.id == memory.id), isTrue);
+
+      backend
+        ..moodError = null
+        ..memoryError = null;
+      await reopened.syncPendingChanges();
+
+      expect(backend.moods.any((entry) => entry.id == mood.id), isTrue);
+      expect(
+        backend.memories.where((entry) => entry.id == memory.id).single.title,
+        updatedMemory.title,
+      );
+      expect(
+        backend.memories.any((entry) => entry.id == deletedMemory.id),
+        isFalse,
+      );
+      expect(await storage.loadPendingSyncOperations('test-user'), isEmpty);
+    },
+  );
+
+  test('notifications remain available and mark read while offline', () async {
+    final storage = LocalDataService();
+    final notification = AppNotification(
+      id: 'saved-notice',
+      kind: 'challenge_completed',
+      sourceKey: 'challenge:2026-10-27:drink-water',
+      title: 'Challenge completed',
+      body: 'Your flower grew.',
+      createdAt: DateTime(2026, 10, 27, 12),
+      isRead: false,
+    );
+    await storage.saveNotifications('test-user', [notification]);
+    final backend = _FakeSupabaseDataService([
+      _dailyContent('2026-10-27', 'day'),
+    ])..notificationError = const SocketException('Failed host lookup');
+    final session = AppSession(
+      storage,
+      clock: () => DateTime(2026, 10, 27, 12),
+      backend: backend,
+    );
+    addTearDown(session.dispose);
+
+    await session.initialize();
+    expect(session.notifications.single.id, notification.id);
+    expect(session.notificationError, isNull);
+    await session.markNotificationRead(notification.id);
+    expect(session.notifications.single.isRead, isTrue);
+    expect(
+      await storage.loadPendingNotificationReads('test-user'),
+      contains(notification.id),
+    );
+
+    backend
+      ..notificationError = null
+      ..notifications.add(notification);
+    await session.syncPendingChanges();
+
+    expect(backend.notifications.single.isRead, isTrue);
+    expect(session.notifications.single.isRead, isTrue);
+    expect(await storage.loadPendingNotificationReads('test-user'), isEmpty);
+  });
+
+  test('device theme and notification preferences persist locally', () async {
+    final storage = LocalDataService();
+    await storage.saveDeviceTheme('dark');
+    await storage.saveNotificationsEnabled(true);
+
+    final restored = LocalDataService();
+    expect(await restored.loadDeviceTheme(), 'dark');
+    expect(await restored.loadNotificationsEnabled(), isTrue);
+  });
 
   test(
     'offline cache without a saved flower catalog keeps garden progress',
@@ -1096,6 +1368,76 @@ void main() {
       expect(session.activeFlowerId, 'flower-03');
     },
   );
+
+  testWidgets('Home flower blooms by day and resets with new challenges', (
+    tester,
+  ) async {
+    var now = DateTime(2026, 10, 27, 12);
+    final backend = _FakeSupabaseDataService([
+      _dailyContent('2026-10-27', 'day'),
+    ]);
+    final session = AppSession(
+      LocalDataService(),
+      clock: () => now,
+      backend: backend,
+    );
+    addTearDown(session.dispose);
+    await tester.runAsync(session.initialize);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnimatedBuilder(
+            animation: session,
+            builder: (context, _) => HomeScreen(
+              session: session,
+              onOpenMood: () {},
+              onOpenMemories: () {},
+              onOpenChallenges: () {},
+              onOpenGarden: () {},
+              displayName: 'Sunshine',
+              avatarId: 'girl',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('0/10 petals today'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('0/10 petals today'), findsOneWidget);
+    await tester.runAsync(() async {
+      for (final challenge in session.dailyChallenges) {
+        expect(await session.completeDailyChallenge(challenge.id), isTrue);
+        await session.syncPendingChanges();
+      }
+    });
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('10/10 petals today'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('10/10 petals today'), findsOneWidget);
+    expect(find.text('Today’s flower is fully bloomed!'), findsOneWidget);
+    expect(session.lifetimeGrowthPoints, 10);
+
+    now = DateTime(2026, 10, 28, 12);
+    backend.setDailyContent(_dailyContent('2026-10-28', 'tomorrow'));
+    await tester.runAsync(session.refreshDailyChallenges);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('0/10 petals today'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('0/10 petals today'), findsOneWidget);
+    expect(session.completedTodayCount, 0);
+    expect(session.lifetimeGrowthPoints, 10);
+  });
 
   test(
     'legacy 17-point garden is rebased without removing saved unlocks',
@@ -1953,6 +2295,8 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   final List<(String, String)> completedChallenges = [];
   final List<(String, String)> undoneChallenges = [];
   final List<AppNotification> notifications = [];
+  final List<MoodEntry> moods = [];
+  final List<MemoryEntry> memories = [];
   final Set<String> omitGardenCompletionDates = {};
   Map<String, List<String>>? gardenCompletionOverride;
   Completer<void>? completionGate;
@@ -1961,6 +2305,9 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   Object? undoError;
   Object? dailyCompletionQueryError;
   Object? gardenProgressError;
+  Object? moodError;
+  Object? memoryError;
+  Object? notificationError;
   Completer<void>? nextProgressGate;
   DailyContent? dailyContentOverride;
   int dailyContentLoadCalls = 0;
@@ -2039,24 +2386,60 @@ class _FakeSupabaseDataService extends SupabaseDataService {
       _progress.flowerUnlockDates,
     );
     final newLifetimeGrowthPoints = _progress.lifetimeGrowthPoints + 1;
-    final activeFlowerIndex =
-        newLifetimeGrowthPoints ~/ AppSession.growthStagesPerFlower;
-    final unlockedCount = (activeFlowerIndex + 1).clamp(
-      0,
-      _progress.flowerCatalog.length,
-    );
-    for (var index = 0; index < unlockedCount; index++) {
-      unlockedFlowers.putIfAbsent(
-        _progress.flowerCatalog[index].id,
-        () => index == 0 ? null : localDate,
+    var activeFlowerId = _progress.activeFlowerId;
+    var growthPoints = _progress.growthPoints;
+    if (activeFlowerId == null) {
+      final activeFlowerIndex =
+          (newLifetimeGrowthPoints - 1) ~/ AppSession.growthStagesPerFlower;
+      if (activeFlowerIndex >= 0 &&
+          activeFlowerIndex < _progress.flowerCatalog.length) {
+        final nextGrowthPoints =
+            newLifetimeGrowthPoints % AppSession.growthStagesPerFlower;
+        if (nextGrowthPoints == 0) {
+          unlockedFlowers.putIfAbsent(
+            _progress.flowerCatalog[activeFlowerIndex].id,
+            () => localDate,
+          );
+          final nextIndex = activeFlowerIndex + 1;
+          activeFlowerId = nextIndex < _progress.flowerCatalog.length
+              ? _progress.flowerCatalog[nextIndex].id
+              : null;
+          growthPoints = 0;
+        } else {
+          activeFlowerId = _progress.flowerCatalog[activeFlowerIndex].id;
+          growthPoints = nextGrowthPoints;
+        }
+      } else {
+        growthPoints = 0;
+      }
+    } else if (growthPoints + 1 < AppSession.growthStagesPerFlower) {
+      growthPoints++;
+    } else {
+      final activeFlowerIndex = _progress.flowerCatalog.indexWhere(
+        (flower) => flower.id == activeFlowerId,
       );
+      final activeFlowerIsUnlocked = unlockedFlowers.containsKey(
+        activeFlowerId,
+      );
+      final unlockIndex = activeFlowerIsUnlocked
+          ? activeFlowerIndex + 1
+          : activeFlowerIndex;
+      if (unlockIndex >= 0 && unlockIndex < _progress.flowerCatalog.length) {
+        unlockedFlowers.putIfAbsent(
+          _progress.flowerCatalog[unlockIndex].id,
+          () => localDate,
+        );
+        final nextIndex = activeFlowerIsUnlocked
+            ? unlockIndex
+            : unlockIndex + 1;
+        activeFlowerId = nextIndex < _progress.flowerCatalog.length
+            ? _progress.flowerCatalog[nextIndex].id
+            : null;
+      } else {
+        activeFlowerId = null;
+      }
+      growthPoints = 0;
     }
-    final activeFlowerId = activeFlowerIndex < _progress.flowerCatalog.length
-        ? _progress.flowerCatalog[activeFlowerIndex].id
-        : null;
-    final growthPoints = activeFlowerId == null
-        ? 0
-        : newLifetimeGrowthPoints % AppSession.growthStagesPerFlower;
     _progress = GardenProgressData(
       dailyCompletions: completions,
       flowerUnlockDates: unlockedFlowers,
@@ -2180,14 +2563,20 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   }
 
   @override
-  Future<List<MoodEntry>> loadMoods() async => [];
+  Future<List<MoodEntry>> loadMoods() async {
+    if (moodError != null) throw moodError!;
+    return List.of(moods);
+  }
 
   @override
-  Future<List<AppNotification>> loadNotifications() async =>
-      List<AppNotification>.of(notifications);
+  Future<List<AppNotification>> loadNotifications() async {
+    if (notificationError != null) throw notificationError!;
+    return List<AppNotification>.of(notifications);
+  }
 
   @override
   Future<void> markNotificationRead(String id) async {
+    if (notificationError != null) throw notificationError!;
     final index = notifications.indexWhere(
       (notification) => notification.id == id,
     );
@@ -2195,7 +2584,38 @@ class _FakeSupabaseDataService extends SupabaseDataService {
   }
 
   @override
-  Future<List<MemoryEntry>> loadMemories() async => [];
+  Future<void> saveMood(MoodEntry entry) async {
+    if (moodError != null) throw moodError!;
+    moods.removeWhere((mood) => mood.id == entry.id);
+    moods.add(entry);
+  }
+
+  @override
+  Future<List<MemoryEntry>> loadMemories() async {
+    if (memoryError != null) throw memoryError!;
+    return List.of(memories);
+  }
+
+  @override
+  Future<MemoryEntry> addMemory(MemoryEntry entry) async {
+    if (memoryError != null) throw memoryError!;
+    memories.removeWhere((memory) => memory.id == entry.id);
+    memories.add(entry);
+    return entry;
+  }
+
+  @override
+  Future<void> updateMemory(MemoryEntry entry) async {
+    if (memoryError != null) throw memoryError!;
+    final index = memories.indexWhere((memory) => memory.id == entry.id);
+    if (index >= 0) memories[index] = entry;
+  }
+
+  @override
+  Future<void> deleteMemory(MemoryEntry entry) async {
+    if (memoryError != null) throw memoryError!;
+    memories.removeWhere((memory) => memory.id == entry.id);
+  }
 }
 
 class _DelayedMemoryStorage extends LocalDataService {

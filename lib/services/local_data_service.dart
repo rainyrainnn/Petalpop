@@ -10,6 +10,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:flutter/material.dart' show Color;
 import '../models/daily_challenge.dart';
 import '../models/garden_flower.dart';
+import '../models/app_notification.dart';
 import '../models/memory_entry.dart';
 import '../models/mood_entry.dart';
 import '../models/garden_progress.dart';
@@ -82,6 +83,70 @@ class LocalDataService {
     await preferences.setString('profile.avatar', avatar);
     await preferences.setString('profile.theme', theme);
   }
+
+  Future<String?> loadDeviceTheme() => preferences.getString('device.theme');
+
+  Future<void> saveDeviceTheme(String theme) =>
+      preferences.setString('device.theme', theme);
+
+  Future<bool> loadNotificationsEnabled() async =>
+      await preferences.getBool('device.notifications_enabled') ?? false;
+
+  Future<void> saveNotificationsEnabled(bool enabled) =>
+      preferences.setBool('device.notifications_enabled', enabled);
+
+  Future<List<AppNotification>> loadNotifications(String userId) async {
+    final data = await preferences.getString('notifications.$userId');
+    if (data == null) return [];
+    final decoded = jsonDecode(data);
+    if (decoded is! List) {
+      throw const FormatException('Cached notifications are invalid.');
+    }
+    return decoded
+        .map((item) {
+          if (item is! Map<String, dynamic>) {
+            throw const FormatException('Cached notification is invalid.');
+          }
+          return AppNotification(
+            id: item['id'] as String,
+            kind: item['kind'] as String,
+            sourceKey: item['sourceKey'] as String,
+            title: item['title'] as String,
+            body: item['body'] as String,
+            createdAt: DateTime.parse(item['createdAt'] as String),
+            isRead: item['isRead'] as bool,
+            isRetracted: item['isRetracted'] as bool? ?? false,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Future<void> saveNotifications(
+    String userId,
+    List<AppNotification> notifications,
+  ) => preferences.setString(
+    'notifications.$userId',
+    jsonEncode([
+      for (final notification in notifications)
+        {
+          'id': notification.id,
+          'kind': notification.kind,
+          'sourceKey': notification.sourceKey,
+          'title': notification.title,
+          'body': notification.body,
+          'createdAt': notification.createdAt.toIso8601String(),
+          'isRead': notification.isRead,
+          'isRetracted': notification.isRetracted,
+        },
+    ]),
+  );
+
+  Future<List<String>> loadPendingNotificationReads(String userId) async =>
+      await preferences.getStringList('notifications.pending_reads.$userId') ??
+      [];
+
+  Future<void> savePendingNotificationReads(String userId, List<String> ids) =>
+      preferences.setStringList('notifications.pending_reads.$userId', ids);
 
   Future<DailyContent?> loadDailyContentCache() async {
     final database = await _getDailyContentDatabase();
@@ -206,7 +271,7 @@ class LocalDataService {
       'pending_sync_operations',
       where: 'user_id = ?',
       whereArgs: [userId],
-      orderBy: 'created_at ASC',
+      orderBy: 'created_at ASC, rowid ASC',
     );
 
     return rows.map((row) {
@@ -229,6 +294,24 @@ class LocalDataService {
       'pending_sync_operations',
       where: 'id = ?',
       whereArgs: [id],
+    );
+  }
+
+  Future<void> updatePendingSyncOperation(
+    PendingSyncOperation operation,
+  ) async {
+    final db = await _getDailyContentDatabase();
+    await db.update(
+      'pending_sync_operations',
+      {
+        'user_id': operation.userId,
+        'entity': operation.entity,
+        'operation': operation.operation,
+        'payload_json': jsonEncode(operation.payload),
+        'created_at': operation.createdAt,
+      },
+      where: 'id = ?',
+      whereArgs: [operation.id],
     );
   }
 

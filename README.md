@@ -1,7 +1,6 @@
 # PetalPop
 
-PetalPop is a Flutter app with local demo mode and optional Supabase-backed
-authentication and data access.
+PetalPop is a Flutter app with Supabase authentication and data access.
 
 ## Run locally
 
@@ -10,7 +9,8 @@ flutter pub get
 flutter run
 ```
 
-Without Supabase build defines, the existing local/demo experience is used.
+The app requires a Supabase URL and publishable key. Authentication is not
+bypassed when configuration is missing.
 
 ## Supabase setup
 

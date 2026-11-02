@@ -66,6 +66,22 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _session.initialize();
+    _loadDevicePreferences();
+  }
+
+  Future<void> _loadDevicePreferences() async {
+    try {
+      final enabled = await widget.storage.loadNotificationsEnabled();
+      if (!mounted) return;
+      setState(() => _notificationsEnabled = enabled);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not load notification preferences: $error'),
+        ),
+      );
+    }
   }
 
   @override
@@ -294,27 +310,41 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     try {
       await _session.refreshDailyChallenges();
     } catch (error) {
-  if (!mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text(
-        'You’re offline. Your saved garden data is still available. 🌷',
-      ),
-    ),
-  );
-}
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'You’re offline. Your saved garden data is still available. 🌷',
+          ),
+        ),
+      );
+    }
   }
 
-  void _setNotificationsEnabled(bool enabled) {
+  Future<void> _setNotificationsEnabled(bool enabled) async {
+    final previous = _notificationsEnabled;
     setState(() => _notificationsEnabled = enabled);
+    try {
+      await widget.storage.saveNotificationsEnabled(enabled);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _notificationsEnabled = previous);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save this device preference: $error'),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
           content: Text(
             enabled
-                ? 'Preference saved for this session. Phone notifications are not connected yet.'
-                : 'Notification preference turned off for this session.',
+                ? 'Notification preference saved on this device.'
+                : 'Notification preference turned off on this device.',
           ),
         ),
       );

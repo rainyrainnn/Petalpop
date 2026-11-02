@@ -19,15 +19,26 @@ not met. It does not drop tables or delete rows.
 When both build defines are supplied, the app uses Supabase Auth and the
 `SupabaseDataService` for profile preferences, daily content, challenge
 rewards, garden state, moods, memories, and private media. If neither define is
-supplied, the existing local/demo flow is used.
+supplied, the app shows a configuration notice and does not allow sign-up or
+login to bypass Supabase authentication.
 
-The app does **not yet implement a one-time importer for existing local data**
-or an offline write queue. Existing SharedPreferences records and app-private
-media files are not deleted, but they are not automatically copied to a
-Supabase account or merged with remote data. Keep the original app installation
-and local files until an explicit import flow is implemented and verified.
-Authenticated writes require a working backend; they are not safely queued for
-later synchronization.
+The app does **not yet implement a one-time importer for existing local data**.
+Existing local records are not deleted, but they are not automatically copied
+to a newly signed-in account. Keep the original app installation and local
+files until an explicit import flow is implemented and verified.
+
+Mood entries, journal memories, and notification read state are stored locally
+first. Signed-in create, update, and delete operations are queued in the
+existing local SQLite database and retried when the app resumes or otherwise
+syncs. Cached notifications remain visible offline. Theme and the notification
+preference are saved on the device, independently of the signed-in profile.
+The notification preference does not enable Android push notifications; push
+delivery still requires separate platform and server setup.
+
+The Home flower is a daily visual: its petals follow today's completed
+challenges and return to zero when new daily challenges load. The Garden
+progress card continues to show persistent lifetime flower growth and
+unlocks.
 
 ## Read-only live schema inspection
 
@@ -151,45 +162,45 @@ this SQL Editor check is required to confirm deployment.
 
 The client uses ten lifetime challenge-growth points per flower. Before
 deploying it to an authenticated environment, inspect the live garden
-constraints and saved rows, then review both forward migrations in order:
+constraints and saved rows, then review these forward migrations in order:
 
 1. `supabase/migrations/20261028150000_ten_point_flower_progression.sql`
 2. `supabase/migrations/20261029010000_flower_one_growth_start.sql`
+3. `supabase/migrations/20261102010000_zero_progress_for_new_users.sql`
 
-This workspace has not applied or live-tested either migration. The first
+This workspace has not applied or live-tested these migrations. The first
 migration changes the growth constraint to 0–9, rebases progress using
 `lifetime_growth_points`, and installs an atomic completion RPC. The second
-migration aligns the initial flower with the requested progression: flower 1
-is available and active at 0/10; the active flower remains available while it
-grows; and each ten lifetime points fully bloom the current flower and make the
-next catalog flower available at 0/10. It retains lifetime totals and every
-existing unlock row, adds unlock records warranted by lifetime progress, and
-corrects `active_flower_id` from the saved lifetime total. It also updates the
-Auth trigger so newly created users start on flower 1 rather than flower 2.
-The second migration aborts unless the existing catalog contains exactly the
-stable IDs `flower-01` through `flower-20`.
+migration aligns the growth track to flower 1. The third migration starts **new
+accounts** with 0/10 growth, 0 lifetime points, 0/20 flowers unlocked, and 0/10
+daily challenges completed. Flower 1 remains active while it grows, but is not
+unlocked until its first ten growth points are earned. Each subsequent
+ten-point threshold unlocks the flower that was growing and advances to the
+next flower. It updates the signup trigger and completion RPC; it does not
+reset or rewrite existing users' garden rows or unlock records. Apply this
+migration to Supabase before testing new signups.
 
 The completion RPC locks the user's `garden_state` row and only awards growth
 when inserting a new `(user_id, local_date, challenge_id)` completion succeeds.
-Its `unlocked_flower_id` is the next flower made available by that completion,
-or null; `active_flower_id` is the currently growing flower, or null once all
-20 flowers have fully bloomed. After flower 20 reaches 10/10, later unique
+Its `unlocked_flower_id` is the flower made available by that completion, or
+null; `active_flower_id` is the currently growing flower, or null once all 20
+flowers have fully bloomed. After flower 20 reaches 10/10, later unique
 completions remain in challenge history and lifetime growth without creating a
-nonexistent active flower. Add any future flowers through a separate,
-reviewed catalog/assets release with new stable IDs and unique `sort_order`
-values; the progression migration intentionally does not seed or overwrite
-catalog artwork.
+nonexistent active flower. Add any future flowers through a separate, reviewed
+catalog/assets release with new stable IDs and unique `sort_order` values; the
+progression migrations do not seed or overwrite catalog artwork.
 
 ## What the migration creates
 
 - `profiles`: one profile per `auth.users.id`; an Auth trigger creates a
   default profile for new accounts and the migration backfills missing profile
   rows without overwriting existing rows.
+- `garden_state`: new accounts start with flower 1 active at 0/10 growth and
+  no flowers unlocked; the first unlock is earned at ten unique challenge
+  points. Existing garden progress and unlocks are left unchanged.
 - `daily_quotes`: the persisted quote selection by local date.
 - `challenge_completions`: one row per user, local date, and challenge ID.
   Its composite key is the duplicate-reward guard.
-- `garden_state`: active flower, current growth points, and lifetime growth
-  points.
 - `flower_unlocks`: permanent per-user flower unlocks.
 - `memories`: note/photo/voice metadata. Photo and voice objects are stored in
   the private `petalpop-private` bucket.

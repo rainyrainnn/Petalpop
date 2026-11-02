@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show Color;
+import 'package:uuid/uuid.dart';
 
 import '../models/daily_challenge.dart';
 import '../models/garden_flower.dart';
@@ -64,6 +65,7 @@ class AppSession extends ChangeNotifier {
   DateTime? _lastBackendDateCheck;
   DateTime? _lastOfflineRefreshAttempt;
   Future<void>? _pendingSyncFuture;
+  bool _pendingSyncRequested = false;
   Future<void>? _challengeMutationTail;
   int _pendingChallengeOperationCount = 0;
   bool _isDisposed = false;
@@ -773,16 +775,30 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> refreshNotifications() async {
-    if (backend == null) return;
+    final userId = backend?.authenticatedUserId;
+    if (userId == null) return;
     try {
       final notifications = await backend!.loadNotifications();
       if (_isDisposed) return;
+      final pendingReads = await storage.loadPendingNotificationReads(userId);
       _notifications
         ..clear()
-        ..addAll(notifications);
+        ..addAll(
+          notifications.map(
+            (notification) => pendingReads.contains(notification.id)
+                ? notification.markRead()
+                : notification,
+          ),
+        );
+      await storage.saveNotifications(userId, _notifications);
       notificationError = null;
     } catch (error) {
-      notificationError = error;
+      if (_isExpectedNetworkFailure(error)) {
+        _markOfflineState(error);
+        notificationError = null;
+      } else {
+        notificationError = error;
+      }
     }
     _notifyListenersIfAlive();
   }
@@ -792,14 +808,17 @@ class AppSession extends ChangeNotifier {
       (notification) => notification.id == id,
     );
     if (index == -1 || _notifications[index].isRead) return;
-    if (backend == null) {
-      throw StateError('Notifications are available only for signed-in users.');
-    }
-    await backend!.markNotificationRead(id);
-    if (_isDisposed) return;
     _notifications[index] = _notifications[index].markRead();
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      final pendingReads = await storage.loadPendingNotificationReads(userId);
+      if (!pendingReads.contains(id)) pendingReads.add(id);
+      await storage.savePendingNotificationReads(userId, pendingReads);
+      await storage.saveNotifications(userId, _notifications);
+    }
     notificationError = null;
     _notifyListenersIfAlive();
+    if (userId != null) unawaited(_syncPendingNotificationReads());
   }
 
   Future<void> refreshDailyChallenges() async {
@@ -1029,7 +1048,11 @@ class AppSession extends ChangeNotifier {
     final previousUnlockDates = Map<String, String?>.of(_flowerUnlockDates);
     _removeDailyCompletion(date, challengeId);
     if (_lifetimeGrowthPoints > 0) _lifetimeGrowthPoints--;
-    _reconcileLocalFlowerUnlocks();
+    _reconcileLocalFlowerUnlocks(
+      date: date,
+      previousGrowthPoints: previousGrowthPoints,
+      previousLifetimeGrowthPoints: previousLifetimeGrowthPoints,
+    );
     try {
       await _saveGardenProgress();
     } catch (_) {
@@ -1046,7 +1069,32 @@ class AppSession extends ChangeNotifier {
     return true;
   }
 
-  void _reconcileLocalFlowerUnlocks() {
+  void _reconcileLocalFlowerUnlocks({
+    required String date,
+    required int previousGrowthPoints,
+    required int previousLifetimeGrowthPoints,
+  }) {
+    if (_isAuthenticatedBackend) {
+      if (previousGrowthPoints == 0 &&
+          previousLifetimeGrowthPoints > 0 &&
+          previousLifetimeGrowthPoints % growthStagesPerFlower == 0) {
+        final flowerUnlockedOnUndoDate = _flowerCatalog
+            .where((flower) => _flowerUnlockDates[flower.id] == date)
+            .lastOrNull;
+        if (flowerUnlockedOnUndoDate != null) {
+          _flowerUnlockDates.remove(flowerUnlockedOnUndoDate.id);
+        }
+      }
+      _activeFlowerId = _flowerCatalog
+          .where((flower) => !_flowerUnlockDates.containsKey(flower.id))
+          .firstOrNull
+          ?.id;
+      _growthPoints = _activeFlowerId == null
+          ? 0
+          : _lifetimeGrowthPoints % growthStagesPerFlower;
+      return;
+    }
+
     final activeFlowerIndex = _lifetimeGrowthPoints ~/ growthStagesPerFlower;
     final unlockedFlowerCount = (activeFlowerIndex + 1).clamp(
       0,
@@ -1192,23 +1240,35 @@ class AppSession extends ChangeNotifier {
     final previousLifetimeGrowthPoints = _lifetimeGrowthPoints;
     final previousUnlockDates = Map<String, String?>.of(_flowerUnlockDates);
     _lifetimeGrowthPoints++;
-    final activeFlowerIndex = _lifetimeGrowthPoints ~/ growthStagesPerFlower;
-    final unlockedFlowerCount = (activeFlowerIndex + 1).clamp(
-      0,
-      _flowerCatalog.length,
-    );
-    for (var index = 0; index < unlockedFlowerCount; index++) {
-      _flowerUnlockDates.putIfAbsent(
-        _flowerCatalog[index].id,
-        () => index == 0 ? null : date,
+    final activeFlowerId = _activeFlowerId;
+    if (activeFlowerId == null) {
+      _growthPoints = 0;
+    } else if (_growthPoints + 1 < growthStagesPerFlower) {
+      _growthPoints++;
+    } else {
+      final activeFlowerIndex = _flowerCatalog.indexWhere(
+        (flower) => flower.id == activeFlowerId,
       );
+      final activeFlowerIsUnlocked = _flowerUnlockDates.containsKey(
+        activeFlowerId,
+      );
+      final unlockIndex = activeFlowerIsUnlocked
+          ? activeFlowerIndex + 1
+          : activeFlowerIndex;
+      if (unlockIndex >= 0 && unlockIndex < _flowerCatalog.length) {
+        final newlyUnlockedFlower = _flowerCatalog[unlockIndex];
+        _flowerUnlockDates.putIfAbsent(newlyUnlockedFlower.id, () => date);
+        final nextIndex = activeFlowerIsUnlocked
+            ? unlockIndex
+            : unlockIndex + 1;
+        _activeFlowerId = nextIndex < _flowerCatalog.length
+            ? _flowerCatalog[nextIndex].id
+            : null;
+      } else {
+        _activeFlowerId = null;
+      }
+      _growthPoints = 0;
     }
-    _activeFlowerId = activeFlowerIndex < _flowerCatalog.length
-        ? _flowerCatalog[activeFlowerIndex].id
-        : null;
-    _growthPoints = _activeFlowerId == null
-        ? 0
-        : _lifetimeGrowthPoints % growthStagesPerFlower;
     try {
       await _saveGardenProgress();
     } catch (_) {
@@ -1312,22 +1372,31 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> syncPendingChanges() {
-    if (!_isAuthenticatedBackend) return Future<void>.value();
+    if (_isDisposed || !_isAuthenticatedBackend) return Future<void>.value();
     final activeSync = _pendingSyncFuture;
     if (activeSync != null) {
-      return () async {
-        await activeSync;
-        if (_pendingChallengeOperationCount > 0 && syncError == null) {
-          await syncPendingChanges();
-        }
-      }();
+      _pendingSyncRequested = true;
+      return activeSync;
     }
     late final Future<void> trackedSync;
-    trackedSync = _syncPendingChallengeOperations().whenComplete(() {
-      if (identical(_pendingSyncFuture, trackedSync)) {
-        _pendingSyncFuture = null;
-      }
-    });
+    trackedSync =
+        (() async {
+          do {
+            _pendingSyncRequested = false;
+            await _syncPendingChallengeOperations();
+            if (_isDisposed) return;
+            await _syncPendingDataOperations();
+            if (_isDisposed) return;
+            await _syncPendingNotificationReads();
+          } while (_pendingSyncRequested &&
+              syncError == null &&
+              notificationError == null &&
+              !_isDisposed);
+        })().whenComplete(() {
+          if (identical(_pendingSyncFuture, trackedSync)) {
+            _pendingSyncFuture = null;
+          }
+        });
     _pendingSyncFuture = trackedSync;
     return trackedSync;
   }
@@ -1422,6 +1491,146 @@ class AppSession extends ChangeNotifier {
       syncError = error;
       _notifyListenersIfAlive();
     }
+  }
+
+  Future<void> _syncPendingDataOperations() async {
+    final userId = backend?.authenticatedUserId;
+    if (userId == null) return;
+    late List<PendingSyncOperation> operations;
+    try {
+      operations = await storage.loadPendingSyncOperations(userId);
+    } catch (error) {
+      syncError = error;
+      _notifyListenersIfAlive();
+      return;
+    }
+    final hadOperations = operations.isNotEmpty;
+    while (operations.isNotEmpty) {
+      final operation = operations.first;
+      try {
+        switch ('${operation.entity}:${operation.operation}') {
+          case 'mood:create':
+          case 'mood:update':
+            await backend!.saveMood(
+              MoodEntry.fromJson(
+                operation.payload['entry'] as Map<String, dynamic>,
+              ),
+            );
+          case 'memory:create':
+            final entry = MemoryEntry.fromJson(
+              operation.payload['entry'] as Map<String, dynamic>,
+            );
+            final saved = await backend!.addMemory(entry);
+            final queuedDelete = operations
+                .skip(1)
+                .where(
+                  (pending) =>
+                      pending.entity == 'memory' &&
+                      pending.operation == 'delete' &&
+                      (pending.payload['entry']
+                              as Map<String, dynamic>)['id'] ==
+                          saved.id,
+                );
+            final deleteOperation = queuedDelete.firstOrNull;
+            if (deleteOperation == null) {
+              await _replaceLocalMemory(saved);
+            } else {
+              await storage.updatePendingSyncOperation(
+                PendingSyncOperation(
+                  id: deleteOperation.id,
+                  userId: deleteOperation.userId,
+                  entity: deleteOperation.entity,
+                  operation: deleteOperation.operation,
+                  payload: {'entry': saved.toJson()},
+                  createdAt: deleteOperation.createdAt,
+                ),
+              );
+            }
+          case 'memory:update':
+            await backend!.updateMemory(
+              MemoryEntry.fromJson(
+                operation.payload['entry'] as Map<String, dynamic>,
+              ),
+            );
+          case 'memory:delete':
+            final entry = MemoryEntry.fromJson(
+              operation.payload['entry'] as Map<String, dynamic>,
+            );
+            await backend!.deleteMemory(entry);
+            await storage.deleteMediaFile(entry);
+          default:
+            throw StateError(
+              'Unsupported pending sync operation '
+              '"${operation.entity}:${operation.operation}".',
+            );
+        }
+        await storage.deletePendingSyncOperation(operation.id);
+        operations = await storage.loadPendingSyncOperations(userId);
+      } catch (error) {
+        syncError = error;
+        if (_isExpectedNetworkFailure(error)) _markOfflineState(error);
+        _notifyListenersIfAlive();
+        return;
+      }
+    }
+    if (hadOperations && _pendingChallengeOperationCount == 0) {
+      try {
+        if ((await storage.loadPendingSyncOperations(userId)).isEmpty) {
+          syncError = null;
+        }
+      } catch (error) {
+        syncError = error;
+        _notifyListenersIfAlive();
+      }
+    }
+  }
+
+  Future<void> _syncPendingNotificationReads() async {
+    final userId = backend?.authenticatedUserId;
+    if (userId == null) return;
+    late final List<String> pendingReads;
+    try {
+      pendingReads = await storage.loadPendingNotificationReads(userId);
+    } catch (error) {
+      notificationError = error;
+      _notifyListenersIfAlive();
+      return;
+    }
+    if (pendingReads.isEmpty) return;
+    final completedReads = <String>[];
+    for (final id in pendingReads) {
+      try {
+        await backend!.markNotificationRead(id);
+        completedReads.add(id);
+      } catch (error) {
+        if (_isExpectedNetworkFailure(error)) {
+          _markOfflineState(error);
+          notificationError = null;
+        } else {
+          notificationError = error;
+        }
+        break;
+      }
+    }
+    if (completedReads.isNotEmpty) {
+      pendingReads.removeWhere(completedReads.contains);
+      try {
+        await storage.savePendingNotificationReads(userId, pendingReads);
+      } catch (error) {
+        notificationError = error;
+        _notifyListenersIfAlive();
+        return;
+      }
+    }
+    if (completedReads.isNotEmpty) await refreshNotifications();
+  }
+
+  Future<void> _replaceLocalMemory(MemoryEntry memory) async {
+    final index = _memories.indexWhere((item) => item.id == memory.id);
+    if (index < 0) return;
+    _memories[index] = memory;
+    await storage.saveMemories(_memories);
+    _notifyListenersIfAlive();
   }
 
   Future<void> _refreshPendingChallengeOperations(String userId) async {
@@ -1524,41 +1733,66 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> addMoodEntry(MoodEntry entry) async {
-    if (backend != null) await backend!.saveMood(entry);
     final updated = [entry, ..._moodEntries];
     await storage.saveMoods(updated);
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      await _enqueueDataOperation(
+        entity: 'mood',
+        operation: 'create',
+        payload: {'entry': entry.toJson()},
+        userId: userId,
+      );
+    }
     if (_isDisposed) return;
     _moodEntries
       ..clear()
       ..addAll(updated);
     _notifyListenersIfAlive();
+    if (userId != null) unawaited(syncPendingChanges());
   }
 
   Future<void> addMemory(MemoryEntry memory) async {
-    final savedMemory = backend == null
-        ? memory
-        : await backend!.addMemory(memory);
-    final updated = [savedMemory, ..._memories];
+    final updated = [memory, ..._memories];
     await storage.saveMemories(updated);
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      await _enqueueDataOperation(
+        entity: 'memory',
+        operation: 'create',
+        payload: {'entry': memory.toJson()},
+        userId: userId,
+      );
+    }
     if (_isDisposed) return;
     _memories
       ..clear()
       ..addAll(updated);
     _notifyListenersIfAlive();
+    if (userId != null) unawaited(syncPendingChanges());
   }
 
   Future<void> updateMemory(MemoryEntry memory) async {
-    if (backend != null) await backend!.updateMemory(memory);
     final updated = [
       for (final current in _memories)
         if (current.id == memory.id) memory else current,
     ];
     await storage.saveMemories(updated);
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      await _enqueueDataOperation(
+        entity: 'memory',
+        operation: 'update',
+        payload: {'entry': memory.toJson()},
+        userId: userId,
+      );
+    }
     if (_isDisposed) return;
     _memories
       ..clear()
       ..addAll(updated);
     _notifyListenersIfAlive();
+    if (userId != null) unawaited(syncPendingChanges());
   }
 
   Future<void> deleteMemory(String id) async {
@@ -1570,15 +1804,84 @@ class AppSession extends ChangeNotifier {
       }
     }
     if (entry == null) return;
-    if (backend != null) await backend!.deleteMemory(entry);
-    await storage.deleteMediaFile(entry);
     final updated = _memories.where((memory) => memory.id != id).toList();
     await storage.saveMemories(updated);
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      await _enqueueDataOperation(
+        entity: 'memory',
+        operation: 'delete',
+        payload: {'entry': entry.toJson()},
+        userId: userId,
+      );
+    } else {
+      await storage.deleteMediaFile(entry);
+    }
     if (_isDisposed) return;
     _memories
       ..clear()
       ..addAll(updated);
     _notifyListenersIfAlive();
+    if (userId != null) unawaited(syncPendingChanges());
+  }
+
+  Future<void> _enqueueDataOperation({
+    required String entity,
+    required String operation,
+    required Map<String, dynamic> payload,
+    required String userId,
+  }) => storage.enqueuePendingSyncOperation(
+    PendingSyncOperation(
+      id: const Uuid().v4(),
+      userId: userId,
+      entity: entity,
+      operation: operation,
+      payload: payload,
+      createdAt: DateTime.now().toUtc().toIso8601String(),
+    ),
+  );
+
+  List<MoodEntry> _applyPendingMoodOperations(
+    List<MoodEntry> remoteEntries,
+    List<PendingSyncOperation> operations,
+  ) {
+    final entries = {for (final entry in remoteEntries) entry.id: entry};
+    for (final operation in operations.where((item) => item.entity == 'mood')) {
+      if (operation.operation == 'delete') {
+        entries.remove(operation.payload['id'] as String);
+      } else {
+        final entry = MoodEntry.fromJson(
+          operation.payload['entry'] as Map<String, dynamic>,
+        );
+        entries[entry.id] = entry;
+      }
+    }
+    return entries.values.toList()
+      ..sort((first, second) => second.createdAt.compareTo(first.createdAt));
+  }
+
+  List<MemoryEntry> _applyPendingMemoryOperations(
+    List<MemoryEntry> remoteEntries,
+    List<PendingSyncOperation> operations,
+  ) {
+    final entries = {for (final entry in remoteEntries) entry.id: entry};
+    for (final operation in operations.where(
+      (item) => item.entity == 'memory',
+    )) {
+      if (operation.operation == 'delete') {
+        final entry = MemoryEntry.fromJson(
+          operation.payload['entry'] as Map<String, dynamic>,
+        );
+        entries.remove(entry.id);
+      } else {
+        final entry = MemoryEntry.fromJson(
+          operation.payload['entry'] as Map<String, dynamic>,
+        );
+        entries[entry.id] = entry;
+      }
+    }
+    return entries.values.toList()
+      ..sort((first, second) => second.createdAt.compareTo(first.createdAt));
   }
 
   Future<void> _loadBackendState() async {
@@ -1591,13 +1894,25 @@ class AppSession extends ChangeNotifier {
         backend!.loadMoods(),
         backend!.loadMemories(),
       ]);
+      final userId = backend!.authenticatedUserId;
+      final pendingDataOperations = userId == null
+          ? const <PendingSyncOperation>[]
+          : await storage.loadPendingSyncOperations(userId);
+      final moods = _applyPendingMoodOperations(
+        results[1] as List<MoodEntry>,
+        pendingDataOperations,
+      );
+      final memories = _applyPendingMemoryOperations(
+        results[2] as List<MemoryEntry>,
+        pendingDataOperations,
+      );
       final pendingOperations = await storage.loadPendingChallengeOperations(
         backend!.authenticatedUserId ?? 'guest',
       );
       _setPendingChallengeOperations(pendingOperations);
       await storage.saveDailyContentCache(dailyContent);
-      await storage.saveMoods(results[1] as List<MoodEntry>);
-      await storage.saveMemories(results[2] as List<MemoryEntry>);
+      await storage.saveMoods(moods);
+      await storage.saveMemories(memories);
       _setBackendDailyContent(dailyContent);
       _clearOfflineState();
       if (pendingOperations.isEmpty) {
@@ -1605,14 +1920,16 @@ class AppSession extends ChangeNotifier {
         _replaceGardenProgress(
           results[0] as GardenProgressData,
           replaceAllCompletions: true,
+          allowGrowthRollback: true,
+          normalizeProgress: true,
         );
       }
       _moodEntries
         ..clear()
-        ..addAll(results[1] as List<MoodEntry>);
+        ..addAll(moods);
       _memories
         ..clear()
-        ..addAll(results[2] as List<MemoryEntry>);
+        ..addAll(memories);
     } catch (error) {
       if (_isExpectedNetworkFailure(error)) {
         _markOfflineState(error);
@@ -1659,6 +1976,16 @@ class AppSession extends ChangeNotifier {
         ..addAll(await storage.loadMemories());
     } catch (error) {
       loadError ??= error;
+    }
+    final userId = backend?.authenticatedUserId;
+    if (userId != null) {
+      try {
+        _notifications
+          ..clear()
+          ..addAll(await storage.loadNotifications(userId));
+      } catch (error) {
+        loadError ??= error;
+      }
     }
   }
 
@@ -1773,6 +2100,7 @@ class AppSession extends ChangeNotifier {
     GardenProgressData progress, {
     bool allowGrowthRollback = false,
     bool replaceAllCompletions = false,
+    bool normalizeProgress = false,
     String? replacedCompletionDate,
     List<String>? completionsForReplacedDate,
   }) {
@@ -1856,7 +2184,7 @@ class AppSession extends ChangeNotifier {
       _lifetimeGrowthPoints = progress.lifetimeGrowthPoints;
       _activeFlowerId = progress.activeFlowerId;
     }
-    if (!_isAuthenticatedBackend || !allowGrowthRollback) {
+    if (normalizeProgress || !_isAuthenticatedBackend || !allowGrowthRollback) {
       _migrateFlowerProgress();
     }
   }

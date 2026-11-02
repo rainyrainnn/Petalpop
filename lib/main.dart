@@ -94,30 +94,15 @@ class _PetalPopAppState extends State<PetalPopApp> {
             )
           : _authMode == null
           ? WelcomeScreen(
-              onGetStarted: () => setState(() {
-                if (_backend == null) {
-                  _hasStarted = true;
-                } else {
-                  _authMode = AuthMode.signUp;
-                }
-              }),
+              onGetStarted: () => setState(() => _authMode = AuthMode.signUp),
               onLogIn: () => setState(() => _authMode = AuthMode.logIn),
               onSignUp: () => setState(() => _authMode = AuthMode.signUp),
             )
           : AuthScreen(
               mode: _authMode!,
               onBack: () => setState(() => _authMode = null),
-              onAuthenticate: _backend == null ? null : _authenticate,
-              onContinueAsDemo: (name) {
-                setState(() {
-                  if (name != null && name.isNotEmpty) _displayName = name;
-                  _authMode = null;
-                  _hasStarted = true;
-                });
-                if (name != null && name.isNotEmpty) {
-                  _saveProfile(name: name);
-                }
-              },
+              isSupabaseConfigured: _backend != null,
+              onAuthenticate: _authenticate,
             ),
     );
   }
@@ -125,8 +110,10 @@ class _PetalPopAppState extends State<PetalPopApp> {
   Future<void> _loadProfile() async {
     final cloudUser = widget.client?.auth.currentUser;
     late final Map<String, String> cachedProfile;
+    late final String? deviceTheme;
     try {
       cachedProfile = await _storage.loadProfile();
+      deviceTheme = await _storage.loadDeviceTheme();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -139,7 +126,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
     setState(() {
       _displayName = cachedProfile['name'] ?? _displayName;
       _avatarId = cachedProfile['avatar'] ?? _avatarId;
-      _themeMode = cachedProfile['theme'] == 'dark'
+      _themeMode = (deviceTheme ?? cachedProfile['theme']) == 'dark'
           ? ThemeMode.dark
           : ThemeMode.light;
       if (cloudUser != null) _hasStarted = true;
@@ -151,6 +138,9 @@ class _PetalPopAppState extends State<PetalPopApp> {
       final displayName = profile['display_name'] as String;
       final avatarId = profile['avatar_id'] as String;
       final theme = profile['theme'] as String;
+      final deviceTheme = await _storage.loadDeviceTheme();
+      final effectiveTheme = deviceTheme ?? theme;
+      if (deviceTheme == null) await _storage.saveDeviceTheme(theme);
       await _storage.saveProfile(
         name: displayName,
         avatar: avatarId,
@@ -160,7 +150,9 @@ class _PetalPopAppState extends State<PetalPopApp> {
       setState(() {
         _displayName = displayName;
         _avatarId = avatarId;
-        _themeMode = theme == 'dark' ? ThemeMode.dark : ThemeMode.light;
+        _themeMode = effectiveTheme == 'dark'
+            ? ThemeMode.dark
+            : ThemeMode.light;
         _profileLoadError = null;
       });
       final timeZone = await FlutterTimezone.getLocalTimezone();
@@ -188,9 +180,18 @@ class _PetalPopAppState extends State<PetalPopApp> {
     _saveProfile();
   }
 
-  void _onThemeModeChanged(ThemeMode mode) {
+  Future<void> _onThemeModeChanged(ThemeMode mode) async {
+    final previous = _themeMode;
     setState(() => _themeMode = mode);
-    _saveProfile();
+    try {
+      await _storage.saveDeviceTheme(mode == ThemeMode.dark ? 'dark' : 'light');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _themeMode = previous);
+      _scaffoldMessengerKey.currentState?.showSnackBar(
+        SnackBar(content: Text('Could not save this device theme: $error')),
+      );
+    }
   }
 
   Future<void> _saveProfile({String? name}) async {
@@ -228,7 +229,10 @@ class _PetalPopAppState extends State<PetalPopApp> {
     final client = widget.client;
     final backend = _backend;
     if (client == null || backend == null) {
-      throw StateError('Supabase is not configured.');
+      throw StateError(
+        'Supabase authentication is not configured. Set SUPABASE_URL and '
+        'SUPABASE_PUBLISHABLE_KEY, then restart the app.',
+      );
     }
 
     if (mode == AuthMode.signUp) {
@@ -270,6 +274,11 @@ class _PetalPopAppState extends State<PetalPopApp> {
       final profileName = profile['display_name'] as String;
       final profileAvatarId = profile['avatar_id'] as String;
       final profileTheme = profile['theme'] as String;
+      final deviceTheme = await _storage.loadDeviceTheme();
+      final effectiveTheme = deviceTheme ?? profileTheme;
+      if (deviceTheme == null) {
+        await _storage.saveDeviceTheme(profileTheme);
+      }
       await _storage.saveProfile(
         name: profileName,
         avatar: profileAvatarId,
@@ -279,7 +288,9 @@ class _PetalPopAppState extends State<PetalPopApp> {
       setState(() {
         _displayName = profileName;
         _avatarId = profileAvatarId;
-        _themeMode = profileTheme == 'dark' ? ThemeMode.dark : ThemeMode.light;
+        _themeMode = effectiveTheme == 'dark'
+            ? ThemeMode.dark
+            : ThemeMode.light;
       });
       final timeZone = await FlutterTimezone.getLocalTimezone();
       await backend.saveProfile(
@@ -300,6 +311,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
   }
 
   Future<void> _logout() async {
+    final deviceTheme = await _storage.loadDeviceTheme();
     Future<void>? remoteSignOut;
     if (_backend != null) {
       remoteSignOut = widget.client!.auth.signOut(scope: SignOutScope.local);
@@ -310,7 +322,7 @@ class _PetalPopAppState extends State<PetalPopApp> {
       _authMode = null;
       _displayName = 'Sunshine';
       _avatarId = 'girl';
-      _themeMode = ThemeMode.light;
+      _themeMode = deviceTheme == 'dark' ? ThemeMode.dark : ThemeMode.light;
       _profileLoadError = null;
     });
     if (remoteSignOut != null) {

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:petalpop/main.dart';
+import 'package:petalpop/navigation/main_navigation_screen.dart';
 import 'package:petalpop/models/garden_progress.dart';
 import 'package:petalpop/models/memory_entry.dart';
 import 'package:petalpop/models/mood_entry.dart';
@@ -15,6 +16,7 @@ import 'package:petalpop/screens/home_screen.dart';
 import 'package:petalpop/screens/mood_checkin_screen.dart';
 import 'package:petalpop/screens/profile_screen.dart';
 import 'package:petalpop/screens/settings_screen.dart';
+import 'package:petalpop/screens/welcome_screen.dart';
 import 'package:petalpop/services/app_session.dart';
 import 'package:petalpop/services/local_data_service.dart';
 import 'package:petalpop/theme/app_theme.dart';
@@ -31,7 +33,7 @@ void main() {
     _storage = MemoryLocalDataService();
   });
 
-  testWidgets('welcome screen shows branding and future account actions', (
+  testWidgets('welcome screen opens real account sign-in', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(_app());
@@ -48,14 +50,14 @@ void main() {
     expect(find.text('Welcome back'), findsOneWidget);
     expect(find.text('Email'), findsOneWidget);
     expect(find.text('Password'), findsOneWidget);
-    expect(find.text('Continue in demo mode'), findsOneWidget);
     expect(
-      find.textContaining('authentication is not connected'),
+      find.textContaining('Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY'),
       findsOneWidget,
     );
+    expect(find.textContaining('demo'), findsNothing);
   });
 
-  testWidgets('sign up validates inputs and continues in demo mode', (
+  testWidgets('sign up validates inputs and never bypasses Supabase auth', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(_app());
@@ -66,8 +68,8 @@ void main() {
     expect(find.text('Full name'), findsOneWidget);
     expect(find.text('Confirm password'), findsOneWidget);
 
-    await tester.ensureVisible(find.text('Continue in demo mode'));
-    await tester.tap(find.text('Continue in demo mode'));
+    await tester.ensureVisible(find.text('Create account'));
+    await tester.tap(find.text('Create account'));
     await tester.pump();
     expect(find.text('Enter your name.'), findsOneWidget);
     expect(find.text('Enter your email address.'), findsOneWidget);
@@ -76,8 +78,8 @@ void main() {
     await tester.enterText(find.byType(TextFormField).at(1), 'not-an-email');
     await tester.enterText(find.byType(TextFormField).at(2), 'flower123');
     await tester.enterText(find.byType(TextFormField).at(3), 'different123');
-    await tester.ensureVisible(find.text('Continue in demo mode'));
-    await tester.tap(find.text('Continue in demo mode'));
+    await tester.ensureVisible(find.text('Create account'));
+    await tester.tap(find.text('Create account'));
     await tester.pump();
     expect(find.text('Enter a valid email address.'), findsOneWidget);
     expect(find.text('Passwords do not match.'), findsOneWidget);
@@ -87,29 +89,25 @@ void main() {
       'daisy@example.com',
     );
     await tester.enterText(find.byType(TextFormField).at(3), 'flower123');
-    await tester.ensureVisible(find.text('Continue in demo mode'));
-    await tester.tap(find.text('Continue in demo mode'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.textContaining('Daisy Bloom!'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('My Mood'),
-      240,
-      scrollable: find.byType(Scrollable).first,
+    await tester.ensureVisible(find.text('Create account'));
+    await tester.tap(find.text('Create account'));
+    await tester.pump();
+    expect(
+      find.textContaining('Supabase authentication is not configured'),
+      findsOneWidget,
     );
-    expect(find.text('My Mood'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsNothing);
   });
 
-  testWidgets('demo login validates fields and opens Home', (
+  testWidgets('login validates inputs and never bypasses Supabase auth', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(_app());
     await tester.tap(find.text('Log In'));
     await tester.pump(const Duration(milliseconds: 300));
 
-    await tester.ensureVisible(find.text('Continue in demo mode'));
-    await tester.tap(find.text('Continue in demo mode'));
+    await tester.ensureVisible(find.text('Log In'));
+    await tester.tap(find.text('Log In'));
     await tester.pump();
     expect(find.text('Enter your email address.'), findsOneWidget);
     expect(find.text('Enter a password.'), findsOneWidget);
@@ -119,17 +117,14 @@ void main() {
       'daisy@example.com',
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'flower123');
-    await tester.ensureVisible(find.text('Continue in demo mode'));
-    await tester.tap(find.text('Continue in demo mode'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    await tester.scrollUntilVisible(
-      find.text('My Mood'),
-      240,
-      scrollable: find.byType(Scrollable).first,
+    await tester.ensureVisible(find.text('Log In'));
+    await tester.tap(find.text('Log In'));
+    await tester.pump();
+    expect(
+      find.textContaining('Supabase authentication is not configured'),
+      findsOneWidget,
     );
-    expect(find.text('My Mood'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsNothing);
   });
 
   testWidgets('configured sign-up submits account details to auth handler', (
@@ -143,7 +138,6 @@ void main() {
         home: AuthScreen(
           mode: AuthMode.signUp,
           onBack: () {},
-          onContinueAsDemo: (_) {},
           onAuthenticate:
               ({
                 required AuthMode mode,
@@ -186,7 +180,6 @@ void main() {
         home: AuthScreen(
           mode: AuthMode.logIn,
           onBack: () {},
-          onContinueAsDemo: (_) {},
           onAuthenticate:
               ({
                 required AuthMode mode,
@@ -224,7 +217,6 @@ void main() {
         home: AuthScreen(
           mode: AuthMode.logIn,
           onBack: () {},
-          onContinueAsDemo: (_) {},
           onAuthenticate:
               ({
                 required AuthMode mode,
@@ -266,42 +258,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
-      final client = SupabaseClient(
-        'http://127.0.0.1:1',
-        'test-key',
-        authOptions: const AuthClientOptions(autoRefreshToken: false),
-      );
-      final payload = base64Url
-          .encode(
-            utf8.encode(
-              jsonEncode({
-                'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600,
-                'sub': 'offline-user',
-                'role': 'authenticated',
-              }),
-            ),
-          )
-          .replaceAll('=', '');
-      await client.auth.recoverSession(
-        jsonEncode({
-          'access_token': 'eyJhbGciOiJub25lIn0.$payload.signature',
-          'token_type': 'bearer',
-          'expires_in': 3600,
-          'refresh_token': 'offline-refresh-token',
-          'user': {
-            'id': 'offline-user',
-            'aud': 'authenticated',
-            'role': 'authenticated',
-            'email': 'daisy@example.com',
-            'app_metadata': {
-              'provider': 'email',
-              'providers': ['email'],
-            },
-            'user_metadata': {'display_name': 'Daisy'},
-            'created_at': DateTime.now().toUtc().toIso8601String(),
-          },
-        }),
-      );
+      final client = await _testAuthenticatedClient();
 
       await tester.pumpWidget(PetalPopApp(storage: _storage, client: client));
       await tester.pumpAndSettle();
@@ -922,6 +879,7 @@ void main() {
       tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
       ThemeMode.dark,
     );
+    expect(_storage.deviceTheme, 'dark');
 
     await tester.drag(settingsList, const Offset(0, -220));
     await tester.pumpAndSettle();
@@ -981,13 +939,11 @@ void main() {
 
     await tester.tap(find.text('Get Started'));
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.text('Challenges').last);
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.textContaining('1 of 10 completed today'), findsOneWidget);
-    expect(find.textContaining('1 of 20 flowers unlocked'), findsOneWidget);
+    expect(find.text('Create a happy space'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsNothing);
   });
 
-  testWidgets('notification preference toggle is clearly session-only', (
+  testWidgets('notification preference toggle is saved on the device', (
     WidgetTester tester,
   ) async {
     await _openHome(tester);
@@ -1002,10 +958,23 @@ void main() {
     await tester.pump();
 
     expect(
-      find.textContaining('Phone notifications are not connected yet.'),
+      find.text('Notification preference saved on this device.'),
       findsOneWidget,
     );
     expect(tester.widget<SwitchListTile>(notificationSwitch).value, isTrue);
+    expect(await _storage.loadNotificationsEnabled(), isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_HomeHarness());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Profile').last);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+      isTrue,
+    );
   });
 
   testWidgets(
@@ -1043,10 +1012,8 @@ void main() {
       expect(_storage.profile['avatar'], 'bunny');
 
       await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(_app());
+      await tester.pumpWidget(_HomeHarness());
       await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(find.text('Get Started'));
-      await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('My Mood'),
@@ -1567,17 +1534,160 @@ void main() {
   });
 }
 
-PetalPopApp _app({DateTime Function()? clock}) =>
-    PetalPopApp(storage: _storage, clock: clock);
+PetalPopApp _app({DateTime Function()? clock, SupabaseClient? client}) =>
+    PetalPopApp(storage: _storage, clock: clock, client: client);
 
 Future<void> _openHome(
   WidgetTester tester, {
   DateTime Function()? clock,
 }) async {
-  await tester.pumpWidget(_app(clock: clock));
-  await tester.tap(find.text('Get Started'));
+  await tester.pumpWidget(_HomeHarness(clock: clock));
   await tester.pump(const Duration(milliseconds: 300));
   await tester.pump(const Duration(milliseconds: 100));
+}
+
+Future<SupabaseClient> _testAuthenticatedClient() async {
+  final client = SupabaseClient(
+    'http://127.0.0.1:1',
+    'test-key',
+    authOptions: const AuthClientOptions(autoRefreshToken: false),
+  );
+  final payload = base64Url
+      .encode(
+        utf8.encode(
+          jsonEncode({
+            'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600,
+            'sub': 'offline-user',
+            'role': 'authenticated',
+          }),
+        ),
+      )
+      .replaceAll('=', '');
+  await client.auth.recoverSession(
+    jsonEncode({
+      'access_token': 'eyJhbGciOiJub25lIn0.$payload.signature',
+      'token_type': 'bearer',
+      'expires_in': 3600,
+      'refresh_token': 'offline-refresh-token',
+      'user': {
+        'id': 'offline-user',
+        'aud': 'authenticated',
+        'role': 'authenticated',
+        'email': 'daisy@example.com',
+        'app_metadata': {
+          'provider': 'email',
+          'providers': ['email'],
+        },
+        'user_metadata': {'display_name': 'Daisy'},
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      },
+    }),
+  );
+  return client;
+}
+
+class _HomeHarness extends StatefulWidget {
+  const _HomeHarness({this.clock});
+
+  final DateTime Function()? clock;
+
+  @override
+  State<_HomeHarness> createState() => _HomeHarnessState();
+}
+
+class _HomeHarnessState extends State<_HomeHarness> {
+  String _displayName = 'Sunshine';
+  String _avatarId = 'girl';
+  ThemeMode _themeMode = ThemeMode.light;
+  bool _loggedOut = false;
+  AuthMode? _authMode;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedProfile();
+  }
+
+  Future<void> _loadSavedProfile() async {
+    final profile = await _storage.loadProfile();
+    if (!mounted) return;
+    setState(() {
+      _displayName = profile['name'] ?? _displayName;
+      _avatarId = profile['avatar'] ?? _avatarId;
+      _themeMode = profile['theme'] == 'dark'
+          ? ThemeMode.dark
+          : ThemeMode.light;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: PetalPopTheme.light,
+      darkTheme: PetalPopTheme.dark,
+      themeMode: _themeMode,
+      home: _loggedOut
+          ? _authMode == null
+                ? WelcomeScreen(
+                    onGetStarted: () =>
+                        setState(() => _authMode = AuthMode.signUp),
+                    onLogIn: () => setState(() => _authMode = AuthMode.logIn),
+                    onSignUp: () => setState(() => _authMode = AuthMode.signUp),
+                  )
+                : AuthScreen(
+                    mode: _authMode!,
+                    isSupabaseConfigured: false,
+                    onBack: () => setState(() => _authMode = null),
+                    onAuthenticate:
+                        ({
+                          required AuthMode mode,
+                          required String email,
+                          required String password,
+                          required String? displayName,
+                        }) async =>
+                            'Supabase authentication is not configured.',
+                  )
+          : MainNavigationScreen(
+              storage: _storage,
+              clock: widget.clock,
+              displayName: _displayName,
+              avatarId: _avatarId,
+              themeMode: _themeMode,
+              profileLoadError: null,
+              onDisplayNameChanged: (name) {
+                setState(() => _displayName = name);
+                _storage.saveProfile(
+                  name: name,
+                  avatar: _avatarId,
+                  theme: _themeMode == ThemeMode.dark ? 'dark' : 'light',
+                );
+              },
+              onAvatarChanged: (avatar) {
+                setState(() => _avatarId = avatar);
+                _storage.saveProfile(
+                  name: _displayName,
+                  avatar: avatar,
+                  theme: _themeMode == ThemeMode.dark ? 'dark' : 'light',
+                );
+              },
+              onThemeModeChanged: (mode) {
+                setState(() => _themeMode = mode);
+                _storage.saveDeviceTheme(
+                  mode == ThemeMode.dark ? 'dark' : 'light',
+                );
+                _storage.saveProfile(
+                  name: _displayName,
+                  avatar: _avatarId,
+                  theme: mode == ThemeMode.dark ? 'dark' : 'light',
+                );
+              },
+              onLogout: () => setState(() {
+                _loggedOut = true;
+                _authMode = null;
+              }),
+            ),
+    );
+  }
 }
 
 class MemoryLocalDataService extends LocalDataService {
@@ -1587,6 +1697,8 @@ class MemoryLocalDataService extends LocalDataService {
   final List<String> challenges = [];
   final List<MoodEntry> moods = [];
   final List<MemoryEntry> memories = [];
+  String? deviceTheme;
+  bool notificationsEnabled = false;
   Completer<void>? memorySaveGate;
   GardenProgressData gardenProgress = const GardenProgressData();
 
@@ -1607,6 +1719,20 @@ class MemoryLocalDataService extends LocalDataService {
       ..['name'] = name
       ..['avatar'] = avatar
       ..['theme'] = theme;
+  }
+
+  @override
+  Future<String?> loadDeviceTheme() async => deviceTheme;
+
+  @override
+  Future<void> saveDeviceTheme(String theme) async => deviceTheme = theme;
+
+  @override
+  Future<bool> loadNotificationsEnabled() async => notificationsEnabled;
+
+  @override
+  Future<void> saveNotificationsEnabled(bool enabled) async {
+    notificationsEnabled = enabled;
   }
 
   @override

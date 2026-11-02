@@ -18,15 +18,15 @@ class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.mode,
     required this.onBack,
-    required this.onContinueAsDemo,
-    this.onAuthenticate,
+    required this.onAuthenticate,
+    this.isSupabaseConfigured = true,
     super.key,
   });
 
   final AuthMode mode;
   final VoidCallback onBack;
-  final ValueChanged<String?> onContinueAsDemo;
-  final AuthenticateCallback? onAuthenticate;
+  final AuthenticateCallback onAuthenticate;
+  final bool isSupabaseConfigured;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -75,7 +75,7 @@ class _AuthScreenState extends State<AuthScreen> {
           padding: const EdgeInsets.fromLTRB(22, 8, 22, 28),
           children: [
             AppPageHeader(title: title, subtitle: subtitle, emoji: '🌸'),
-            if (widget.onAuthenticate == null)
+            if (!widget.isSupabaseConfigured)
               PetalCard(
                 color: const Color(0xFFFFE8A9),
                 child: Row(
@@ -88,9 +88,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Demo only: authentication is not connected. '
-                        'No account is created or checked, and your details '
-                        'are not saved.',
+                        'Supabase is not configured yet. Set '
+                        'SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to enable '
+                        'account sign up and login.',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: PetalPopColors.ink,
                         ),
@@ -201,8 +201,6 @@ class _AuthScreenState extends State<AuthScreen> {
                       label: Text(
                         _isSubmitting
                             ? 'Please wait…'
-                            : widget.onAuthenticate == null
-                            ? 'Continue in demo mode'
                             : _isSignUp
                             ? 'Create account'
                             : 'Log In',
@@ -223,11 +221,7 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              widget.onAuthenticate != null
-                  ? 'Your PetalPop account securely stores your profile and progress.'
-                  : _isSignUp
-                  ? 'Already have an account? You can try the demo Log In instead.'
-                  : 'This demo does not verify an account. Your details are not sent anywhere.',
+              'Your PetalPop account securely stores your profile and progress.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -248,18 +242,12 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    final authenticate = widget.onAuthenticate;
-    if (authenticate == null) {
-      widget.onContinueAsDemo(_isSignUp ? _nameController.text.trim() : null);
-      return;
-    }
-
     setState(() {
       _isSubmitting = true;
       _submissionError = null;
     });
     try {
-      final message = await authenticate(
+      final message = await widget.onAuthenticate(
         mode: widget.mode,
         email: _emailController.text.trim(),
         password: _passwordController.text,
@@ -276,6 +264,8 @@ class _AuthScreenState extends State<AuthScreen> {
             ? 'Could not connect to PetalPop. Check your internet connection '
                   'and try again.'
             : error is AuthException
+            ? error.message
+            : error is StateError
             ? error.message
             : 'Could not authenticate: $error';
       });

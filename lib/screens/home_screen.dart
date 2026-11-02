@@ -256,14 +256,15 @@ class HomeScreen extends StatelessWidget {
                       child: FlowerIllustration(
                         color:
                             session.activeFlower?.color ??
-                            session.flowerCatalog.lastOrNull?.color ??
+                            session.flowerCatalog.firstOrNull?.color ??
                             PetalPopColors.petalPink,
-                        growthPoints: session.activeFlower == null
-                            ? AppSession.growthStagesPerFlower
-                            : session.growthPoints,
+                        growthPoints: session.completedTodayCount.clamp(
+                          0,
+                          AppSession.dailyChallengeCount,
+                        ),
                         variety:
                             session.activeFlower?.sortOrder ??
-                            session.flowerCatalog.lastOrNull?.sortOrder ??
+                            session.flowerCatalog.firstOrNull?.sortOrder ??
                             1,
                         petalCount: AppSession.activeFlowerVisualStages,
                       ),
@@ -274,8 +275,7 @@ class HomeScreen extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            session.activeFlower?.name ??
-                                'Garden in full bloom',
+                            'Today’s flower',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.titleSmall
@@ -286,29 +286,23 @@ class HomeScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            session.activeFlower == null
-                                ? '${session.unlockedFlowerCount}/'
-                                      '${session.flowerCatalog.length} flowers · '
-                                      'Fully bloomed'
-                                : '${session.growthPoints}/'
-                                      '${AppSession.growthStagesPerFlower} petals · '
-                                      '${session.unlockedFlowerCount}/'
-                                      '${session.flowerCatalog.length} flowers',
+                            '${session.completedTodayCount}/'
+                            '${AppSession.dailyChallengeCount} petals today',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
-                          if (session.activeFlower != null) ...[
-                            const SizedBox(height: 5),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: LinearProgressIndicator(
-                                value: session.activeFlowerProgress,
-                                minHeight: 5,
-                                backgroundColor:
-                                    theme.colorScheme.surfaceContainerHighest,
-                                color: theme.colorScheme.tertiary,
-                              ),
+                          const SizedBox(height: 5),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: LinearProgressIndicator(
+                              value:
+                                  session.completedTodayCount /
+                                  AppSession.dailyChallengeCount,
+                              minHeight: 5,
+                              backgroundColor:
+                                  theme.colorScheme.surfaceContainerHighest,
+                              color: theme.colorScheme.tertiary,
                             ),
-                          ],
+                          ),
                         ],
                       ),
                     ),
@@ -344,10 +338,11 @@ class _HomeFlowerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final flower = session.activeFlower ?? session.flowerCatalog.lastOrNull;
-    final growthPoints = session.activeFlower == null
-        ? AppSession.growthStagesPerFlower
-        : session.growthPoints;
+    final flower = session.activeFlower ?? session.flowerCatalog.firstOrNull;
+    final growthPoints = session.completedTodayCount.clamp(
+      0,
+      AppSession.dailyChallengeCount,
+    );
     final flowerVariety = flower == null
         ? 1
         : flower.sortOrder > 0
@@ -424,9 +419,9 @@ class _HomeFlowerCard extends StatelessWidget {
             ),
             const SizedBox(height: 7),
             Text(
-              session.activeFlower == null
-                  ? 'All your flowers are blooming beautifully.'
-                  : 'One gentle challenge at a time, your next bloom is closer.',
+              growthPoints == AppSession.dailyChallengeCount
+                  ? 'Today’s flower is fully bloomed!'
+                  : 'Each completed challenge adds a petal to today’s flower.',
               textAlign: compact ? TextAlign.center : TextAlign.left,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,

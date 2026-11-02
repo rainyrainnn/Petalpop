@@ -111,7 +111,7 @@ class SettingsScreen extends StatelessWidget {
                         color: PetalPopColors.hotPink,
                       ),
                       title: const Text('Notifications'),
-                      subtitle: const Text('Saved for this app session only'),
+                      subtitle: const Text('Saved on this device'),
                     ),
                     const Divider(height: 1, indent: 16, endIndent: 16),
                     Padding(
@@ -191,7 +191,7 @@ class SettingsScreen extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              'PetalPop demo · Your entries are saved on this device.',
+              'PetalPop · Your personal settings and entries.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -213,7 +213,7 @@ class SettingsScreen extends StatelessWidget {
     showAboutDialog(
       context: context,
       applicationName: 'PetalPop',
-      applicationVersion: 'Demo',
+      applicationVersion: '1.0.0',
       applicationIcon: const Icon(
         Icons.local_florist_rounded,
         color: PetalPopColors.hotPink,
@@ -221,11 +221,10 @@ class SettingsScreen extends StatelessWidget {
       ),
       children: const [
         Text(
-          'Your Daily Happy Space. This version stores mood check-ins, '
-          'memories, and challenge progress in memory on this device session. '
-          'Signed-in data uses the configured backend. In-app challenge and '
-          'flower alerts appear in the Home bell after its database migration '
-          'is installed; push notifications are not configured.',
+          'Your Daily Happy Space. PetalPop stores supported offline data on '
+          'this device and syncs signed-in data with Supabase. In-app challenge '
+          'and flower alerts appear in the Home bell after its database '
+          'migration is installed; push notifications are not configured.',
         ),
       ],
     );

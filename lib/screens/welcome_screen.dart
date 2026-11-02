@@ -8,14 +8,14 @@ import '../widgets/flower_illustration.dart';
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({
     super.key,
-    this.onGetStarted,
-    this.onLogIn,
-    this.onSignUp,
+    required this.onGetStarted,
+    required this.onLogIn,
+    required this.onSignUp,
   });
 
-  final VoidCallback? onGetStarted;
-  final VoidCallback? onLogIn;
-  final VoidCallback? onSignUp;
+  final VoidCallback onGetStarted;
+  final VoidCallback onLogIn;
+  final VoidCallback onSignUp;
 
   @override
   State<WelcomeScreen> createState() => _WelcomeScreenState();
@@ -100,11 +100,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                               SizedBox(
                                 width: double.infinity,
                                 child: FilledButton(
-                                  onPressed:
-                                      widget.onGetStarted ??
-                                      () => _showMessage(
-                                        'Your happy space is getting ready.',
-                                      ),
+                                  onPressed: widget.onGetStarted,
                                   child: const Text('Get Started'),
                                 ),
                               ),
@@ -122,12 +118,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                         ?.copyWith(fontSize: 13),
                                   ),
                                   TextButton(
-                                    onPressed:
-                                        widget.onLogIn ??
-                                        () => _showMessage(
-                                          'Log in will be available in a '
-                                          'later PetalPop milestone.',
-                                        ),
+                                    onPressed: widget.onLogIn,
                                     style: TextButton.styleFrom(
                                       minimumSize: const Size(0, 40),
                                       padding: const EdgeInsets.symmetric(
@@ -151,12 +142,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                                     ),
                                   ),
                                   TextButton(
-                                    onPressed:
-                                        widget.onSignUp ??
-                                        () => _showMessage(
-                                          'Sign up will be available in a '
-                                          'later PetalPop milestone.',
-                                        ),
+                                    onPressed: widget.onSignUp,
                                     style: TextButton.styleFrom(
                                       minimumSize: const Size(0, 40),
                                       padding: const EdgeInsets.symmetric(
@@ -184,23 +170,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                 );
               },
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showMessage(String message) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: const Icon(Icons.local_florist, color: PetalPopColors.hotPink),
-        title: const Text('Coming up in PetalPop'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Got it'),
           ),
         ],
       ),
