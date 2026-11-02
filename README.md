@@ -22,6 +22,16 @@ URL and publishable key at build time; never use a service-role key in the app.
 flutter run --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 ```
 
+Build a release APK with the same build-time values:
+
+```powershell
+flutter build apk --release --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
+```
+
+Replace both placeholders with your Supabase project URL and publishable (or
+legacy anon) key. These values are compiled into the APK, so the person
+installing it does not need to configure the phone.
+
 ## Verify
 
 ```powershell

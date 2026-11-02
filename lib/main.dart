@@ -10,6 +10,16 @@ import 'services/local_data_service.dart';
 import 'config/supabase_config.dart';
 import 'services/supabase_data_service.dart';
 
+bool _isConnectivityError(Object error) {
+  if (error is AuthRetryableFetchException) return true;
+  final message = error.toString();
+  return message.contains('SocketException') ||
+      message.contains('Failed host lookup') ||
+      message.contains('Connection refused') ||
+      message.contains('Connection timed out') ||
+      message.contains('Network is unreachable');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (SupabaseConfig.cleanUrl.isNotEmpty !=
@@ -165,7 +175,11 @@ class _PetalPopAppState extends State<PetalPopApp> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _profileLoadError = 'Could not load saved profile preferences: $error';
+        // Connectivity failures use the cached profile without alarming the user.
+        _profileLoadError = _isConnectivityError(error)
+            ? null
+            : 'Could not sync profile preferences. Your saved settings are '
+                  'still available.';
       });
     }
   }
@@ -302,9 +316,10 @@ class _PetalPopAppState extends State<PetalPopApp> {
     } catch (error) {
       if (!mounted) return null;
       setState(() {
-        _profileLoadError =
-            'You are signed in, but your profile settings could not be synced: '
-            '$error';
+        _profileLoadError = _isConnectivityError(error)
+            ? null
+            : 'You are signed in, but your profile settings could not be '
+                  'synced. Your saved settings are still available.';
       });
     }
     return null;

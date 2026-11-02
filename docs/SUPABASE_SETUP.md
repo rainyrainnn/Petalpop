@@ -225,6 +225,18 @@ flutter pub get
 flutter run --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 ```
 
+For an Android release APK, pass the same values to the build command:
+
+```powershell
+flutter build apk --release --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
+```
+
+Replace the placeholders with the project's URL and publishable (or legacy
+anon) key. Flutter embeds these compile-time values in the APK; no `.env` file
+or configuration on the installing phone is needed. If either define is
+omitted, the app is built without Supabase configuration. Never use a
+service-role or secret key.
+
 Configure email/password authentication and email confirmation in the
 Supabase dashboard as desired. Add Android app links/deep links only if you
 enable an email confirmation redirect. Keep signing credentials outside the

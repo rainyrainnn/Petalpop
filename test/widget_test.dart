@@ -271,6 +271,11 @@ void main() {
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
+      expect(
+        find.textContaining('Could not load saved profile preferences'),
+        findsNothing,
+      );
+      expect(find.textContaining('Failed host lookup'), findsNothing);
       final settingsList = find.descendant(
         of: find.byType(SettingsScreen),
         matching: find.byType(Scrollable),
