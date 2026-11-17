@@ -211,6 +211,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         onThemeModeChanged: widget.onThemeModeChanged,
                         onNotificationsChanged: _setNotificationsEnabled,
                         onLogout: widget.onLogout,
+                        onDeleteAccount: _deleteAccount,
                         onBack: () => setState(() => _isSettingsOpen = false),
                       ),
                       NotificationScreen(
@@ -349,6 +350,56 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         ),
       );
   }
+
+
+
+Future<void> _deleteAccount() async {
+  final backend = widget.backend;
+
+  if (backend == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Account deletion requires an active connection.'),
+      ),
+    );
+    return;
+  }
+
+  final userId = backend.authenticatedUserId;
+
+  if (userId == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Please sign in again before deleting your account.'),
+      ),
+    );
+    return;
+  }
+
+  try {
+    // First, delete the account and cloud data.
+    await backend.deleteAccount();
+
+    // Then, remove this account's local data.
+    await widget.storage.deleteLocalUserData(userId);
+
+    if (!mounted) return;
+
+    // Return to the welcome screen.
+    widget.onLogout();
+  } catch (error) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Account deletion could not be completed. Please contact support.',
+        ),
+      ),
+    );
+  }
+}
+
 
   Future<void> _showHelpDialog() async {
     await showDialog<void>(

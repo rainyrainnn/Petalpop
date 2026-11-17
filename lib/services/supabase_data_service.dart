@@ -455,7 +455,7 @@ Future<MemoryEntry> addMemory(MemoryEntry entry) async {
         .eq('user_id', userId);
   }
 
-  Future<void> deleteMemory(MemoryEntry entry) async {
+   Future<void> deleteMemory(MemoryEntry entry) async {
     await client
         .from('memories')
         .delete()
@@ -464,6 +464,26 @@ Future<MemoryEntry> addMemory(MemoryEntry entry) async {
     final path = entry.storagePath;
     if (path != null) {
       await client.storage.from(privateBucket).remove([path]);
+    }
+  }
+
+  Future<void> deleteAccount() async {
+    if (client.auth.currentUser == null) {
+      throw const AuthException('Please sign in again.');
+    }
+
+    final response = await client.functions.invoke(
+      'delete-account',
+      body: {'confirmDelete': true},
+    );
+
+    final data = response.data;
+
+    if (response.status < 200 ||
+        response.status >= 300 ||
+        data is! Map ||
+        data['success'] != true) {
+      throw StateError('Account deletion could not be completed.');
     }
   }
 }

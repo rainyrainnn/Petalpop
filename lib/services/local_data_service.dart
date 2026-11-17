@@ -596,6 +596,47 @@ class LocalDataService {
     return directory;
   }
 
+
+  Future<void> deleteLocalUserData(String userId) async {
+    // Remove account-specific saved preferences and entries.
+    await preferences.remove('profile.name');
+    await preferences.remove('profile.avatar');
+    await preferences.remove('profile.theme');
+    await preferences.remove('garden.completed');
+    await preferences.remove('garden.daily_progress');
+    await preferences.remove('moods');
+    await preferences.remove('memories');
+    await preferences.remove('notifications.$userId');
+    await preferences.remove('notifications.pending_reads.$userId');
+
+    // Remove pending operations belonging to this account.
+    final db = await _getDailyContentDatabase();
+
+    await db.delete(
+      'pending_challenge_operations',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+
+    await db.delete(
+      'pending_sync_operations',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+
+    // Remove locally stored memory photos and voice files.
+    final documents = await getApplicationDocumentsDirectory();
+    final mediaDirectory = Directory(
+      '${documents.path}${Platform.pathSeparator}petalpop_memories',
+    );
+
+    if (await mediaDirectory.exists()) {
+      await mediaDirectory.delete(recursive: true);
+    }
+
+    _mediaDirectory = null;
+  }
+
   MoodEntry _moodFromJson(Map<String, dynamic> json) => MoodEntry(
     id: json['id'] as String? ?? const Uuid().v4(),
     mood: json['mood'] as String,

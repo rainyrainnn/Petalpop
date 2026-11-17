@@ -14,7 +14,8 @@ class SettingsScreen extends StatelessWidget {
     required this.onThemeModeChanged,
     required this.onNotificationsChanged,
     required this.onLogout,
-    required this.onBack,
+    required this.onDeleteAccount,
+    required this.onBack, 
     super.key,
   });
 
@@ -27,6 +28,7 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final ValueChanged<bool> onNotificationsChanged;
   final VoidCallback onLogout;
+  final VoidCallback onDeleteAccount;
   final VoidCallback onBack;
 
   @override
@@ -179,16 +181,31 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 22),
-            OutlinedButton.icon(
-              onPressed: () => _confirmLogout(context),
-              icon: const Icon(Icons.logout_rounded),
-              label: const Text('Log Out'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: PetalPopColors.deepPink,
-                minimumSize: const Size.fromHeight(52),
-              ),
-            ),
+           
+const SizedBox(height: 22),
+
+OutlinedButton.icon(
+  onPressed: () => _confirmDeleteAccount(context),
+  icon: const Icon(Icons.delete_forever_rounded),
+  label: const Text('Delete Account'),
+  style: OutlinedButton.styleFrom(
+    foregroundColor: Colors.red,
+    minimumSize: const Size.fromHeight(52),
+  ),
+),
+
+const SizedBox(height: 12),
+
+OutlinedButton.icon(
+  onPressed: () => _confirmLogout(context),
+  icon: const Icon(Icons.logout_rounded),
+  label: const Text('Log Out'),
+  style: OutlinedButton.styleFrom(
+    foregroundColor: PetalPopColors.deepPink,
+    minimumSize: const Size.fromHeight(52),
+  ),
+),
+
             const SizedBox(height: 12),
             Text(
               'PetalPop · Your personal settings and entries.',
@@ -200,6 +217,37 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+
+Future<void> _confirmDeleteAccount(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      icon: const Icon(Icons.warning_amber_rounded, color: Colors.red),
+      title: const Text('Delete Account?'),
+      content: const Text(
+        'This permanently deletes your PetalPop account and '
+        'associated cloud data. This action cannot be undone.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text(
+            'Delete Permanently',
+            style: TextStyle(color: Colors.red),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed == true) {
+    onDeleteAccount();
+  }
+}
 
   Future<void> _editProfile(BuildContext context) async {
     final name = await showDialog<String>(
